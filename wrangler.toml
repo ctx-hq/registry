@@ -1,0 +1,30 @@
+name = "ctx-api"
+main = "src/index.ts"
+compatibility_date = "2025-03-27"
+compatibility_flags = ["nodejs_compat"]
+
+routes = [
+  { pattern = "api.getctx.org", custom_domain = true }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ctx-registry"
+database_id = "REDACTED_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "FORMULAS"
+bucket_name = "ctx-formulas"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "REDACTED_KV_NAMESPACE_ID"
+
+[vars]
+API_VERSION = "v1"
+GITHUB_CLIENT_ID = ""
+
+# [triggers]
+# crons = ["0 */6 * * *"]
+# TODO: Free plan cron limit reached, enable when upgraded or free up a slot

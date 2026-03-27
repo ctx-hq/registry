@@ -1,0 +1,66 @@
+import { Hono } from "hono";
+import type { AppEnv, Bindings } from "./bindings";
+import { corsMiddleware } from "./middleware/cors";
+import { rateLimitMiddleware } from "./middleware/rate-limit";
+import { AppError } from "./utils/errors";
+
+import health from "./routes/health";
+import packages from "./routes/packages";
+import search from "./routes/search";
+import publish from "./routes/publish";
+import resolve from "./routes/resolve";
+import auth from "./routes/auth";
+import agent from "./routes/agent";
+import download from "./routes/download";
+import scanner from "./routes/scanner";
+import orgs from "./routes/orgs";
+import versions from "./routes/versions";
+
+const app = new Hono<AppEnv>();
+
+// Global middleware
+app.use("*", corsMiddleware);
+app.use("/v1/*", rateLimitMiddleware);
+
+// Error handler
+app.onError((err, c) => {
+  if (err instanceof AppError) {
+    return c.json(err.toJSON(), err.statusCode);
+  }
+  console.error("Unhandled error:", err);
+  return c.json({ error: "internal_error", message: "An unexpected error occurred" }, 500);
+});
+
+// Mount routes
+app.route("/", health);
+app.route("/", packages);
+app.route("/", search);
+app.route("/", publish);
+app.route("/", resolve);
+app.route("/", auth);
+app.route("/", agent);
+app.route("/", download);
+app.route("/", scanner);
+app.route("/", orgs);
+app.route("/", versions);
+
+// Root
+app.get("/", (c) => {
+  return c.json({
+    name: "ctx registry",
+    version: "0.1.0",
+    docs: "https://getctx.org/docs",
+    api: "https://api.getctx.org/v1",
+  });
+});
+
+// Scheduled handler (scanner cron)
+export default {
+  fetch: app.fetch,
+  async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
+    const { runScanner } = await import("./services/scanner");
+    console.log("Scanner cron triggered:", event.cron);
+    const result = await runScanner(env);
+    console.log("Scanner complete:", result);
+  },
+};
