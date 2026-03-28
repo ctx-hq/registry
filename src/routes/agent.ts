@@ -31,9 +31,15 @@ app.get("/:fullName{.+\\.ctx$}", async (c) => {
 
   let instructions = `## ${fullName}@${version}\n\n`;
   instructions += `${pkg.description}\n\n`;
-  instructions += `### Install\n\n`;
-  instructions += `Run: ctx install ${fullName}\n\n`;
-  instructions += `If ctx is not installed:\n`;
+
+  instructions += `### Install or Update\n\n`;
+  instructions += `\`ctx install ${fullName}\` is idempotent — safe to run repeatedly:\n`;
+  instructions += `- Not installed → installs and links to all detected agents\n`;
+  instructions += `- Already installed, same version → no-op\n`;
+  instructions += `- Already installed, newer version available → updates to latest\n\n`;
+  instructions += `Run:\n`;
+  instructions += `  ctx install ${fullName}\n\n`;
+  instructions += `If ctx is not installed yet:\n`;
   instructions += `  curl -fsSL https://getctx.org/install.sh | sh\n\n`;
 
   if (pkg.type === "mcp" && manifest.mcp) {
@@ -50,9 +56,15 @@ app.get("/:fullName{.+\\.ctx$}", async (c) => {
     }
   }
 
+  instructions += `\n### Other Commands\n\n`;
+  instructions += `- Check for updates: \`ctx outdated ${fullName}\`\n`;
+  instructions += `- Update: \`ctx update ${fullName}\`\n`;
+  instructions += `- Remove: \`ctx remove ${fullName}\`\n`;
+  instructions += `- Info: \`ctx info ${fullName}\`\n`;
+
   instructions += `\nType: ${pkg.type}\n`;
   instructions += `License: ${pkg.license || "unspecified"}\n`;
-  instructions += `Supports: Claude Code, Cursor, Windsurf\n`;
+  instructions += `Supports: Claude Code, Cursor, Windsurf, Copilot, Cline, Continue, Zed, Roo, Goose, Amp, Trae, and more\n`;
 
   c.header("Content-Type", "text/plain; charset=utf-8");
   return c.text(instructions);
