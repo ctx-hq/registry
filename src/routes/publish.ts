@@ -6,6 +6,7 @@ import { isValidFullName, parseFullName } from "../utils/naming";
 import { isValidSemVer } from "../utils/semver";
 import { generateId } from "../utils/response";
 import { computeSHA256 } from "../services/publish";
+import { enqueueEnrichment } from "../services/enrichment";
 import { parse as parseYAML } from "yaml";
 
 const app = new Hono<AppEnv>();
@@ -76,23 +77,49 @@ app.post("/v1/publish", authMiddleware, async (c) => {
     "SELECT * FROM packages WHERE full_name = ?"
   ).bind(name).first();
 
-  const pkgId = pkg?.id ?? generateId();
+  const pkgId = (pkg?.id as string) ?? generateId();
   if (pkg && pkg.owner_id !== user.id) {
     throw forbidden("You don't have permission to publish to this package");
   }
+  // Parse optional hub metadata (sent by hub import scripts)
+  const metadataRaw = formData.get("metadata");
+  let hubMeta: {
+    summary?: string;
+    capabilities?: string[];
+    categories?: string[];
+    author?: string;
+    homepage?: string;
+    repository?: string;
+    import_source?: string;
+    import_external_id?: string;
+  } = {};
+  if (typeof metadataRaw === "string") {
+    try { hubMeta = JSON.parse(metadataRaw); } catch { /* ignore */ }
+  }
+
+  const keywords = JSON.stringify(manifest.keywords ?? []);
+  const summary = hubMeta.summary ?? "";
+  const capabilities = hubMeta.capabilities ? JSON.stringify(hubMeta.capabilities) : "[]";
+  const author = hubMeta.author ?? "";
+  const homepage = hubMeta.homepage ?? "";
+  const repository = hubMeta.repository ?? "";
+  const importSource = hubMeta.import_source ?? "";
+  const importExternalId = hubMeta.import_external_id ?? "";
+
   if (!pkg) {
     await c.env.DB.prepare(
-      `INSERT INTO packages (id, scope, name, full_name, type, description, keywords, owner_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO packages (id, scope, name, full_name, type, description, keywords, summary, capabilities, author, homepage, repository, import_source, import_external_id, owner_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       pkgId, parsed.scope, parsed.name, name, type_, description,
-      JSON.stringify(manifest.keywords ?? []), user.id
+      keywords, summary, capabilities, author, homepage, repository,
+      importSource, importExternalId, user.id
     ).run();
   } else {
     // Update description/keywords
     await c.env.DB.prepare(
       "UPDATE packages SET description = ?, keywords = ?, updated_at = datetime('now') WHERE id = ?"
-    ).bind(description, JSON.stringify(manifest.keywords ?? []), pkgId).run();
+    ).bind(description, keywords, pkgId).run();
   }
 
   // Check version doesn't already exist
@@ -127,6 +154,11 @@ app.post("/v1/publish", authMiddleware, async (c) => {
     `INSERT INTO audit_events (id, actor_id, action, target_type, target_id, metadata)
      VALUES (?, ?, 'publish', 'version', ?, ?)`
   ).bind(generateId(), user.id, versionId, JSON.stringify({ version, package: name })).run();
+
+  // Enqueue enrichment + vectorization (non-blocking)
+  c.executionCtx.waitUntil(
+    enqueueEnrichment(c.env.ENRICHMENT_QUEUE, pkgId)
+  );
 
   return c.json({
     full_name: name,

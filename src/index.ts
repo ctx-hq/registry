@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv, Bindings } from "./bindings";
+import type { EnrichmentMessage } from "./models/types";
 import { corsMiddleware } from "./middleware/cors";
 import { rateLimitMiddleware } from "./middleware/rate-limit";
 import { AppError } from "./utils/errors";
@@ -15,6 +16,7 @@ import download from "./routes/download";
 import scanner from "./routes/scanner";
 import orgs from "./routes/orgs";
 import versions from "./routes/versions";
+import categories from "./routes/categories";
 
 const app = new Hono<AppEnv>();
 
@@ -43,6 +45,7 @@ app.route("/", download);
 app.route("/", scanner);
 app.route("/", orgs);
 app.route("/", versions);
+app.route("/", categories);
 
 // Root
 app.get("/", (c) => {
@@ -54,7 +57,7 @@ app.get("/", (c) => {
   });
 });
 
-// Scheduled handler (scanner cron)
+// Scheduled handler (scanner cron) and queue consumer
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
@@ -62,5 +65,9 @@ export default {
     console.log("Scanner cron triggered:", event.cron);
     const result = await runScanner(env);
     console.log("Scanner complete:", result);
+  },
+  async queue(batch: MessageBatch<EnrichmentMessage>, env: Bindings) {
+    const { processEnrichmentBatch } = await import("./services/enrichment");
+    await processEnrichmentBatch(batch, env);
   },
 };

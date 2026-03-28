@@ -21,6 +21,22 @@ bucket_name = "ctx-formulas"
 binding = "CACHE"
 id = "REDACTED_KV_NAMESPACE_ID"
 
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "ctx-packages"
+
+[ai]
+binding = "AI"
+
+[[queues.producers]]
+binding = "ENRICHMENT_QUEUE"
+queue = "ctx-enrichment"
+
+[[queues.consumers]]
+queue = "ctx-enrichment"
+max_batch_size = 10
+max_batch_timeout = 30
+
 [vars]
 API_VERSION = "v1"
 GITHUB_CLIENT_ID = ""

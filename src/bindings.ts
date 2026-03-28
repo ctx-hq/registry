@@ -4,6 +4,9 @@ export type Bindings = {
   DB: D1Database;
   FORMULAS: R2Bucket;
   CACHE: KVNamespace;
+  VECTORIZE: VectorizeIndex;
+  AI: Ai;
+  ENRICHMENT_QUEUE: Queue;
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
   API_VERSION: string;

@@ -16,9 +16,20 @@ app.get("/v1/packages", async (c) => {
   const params: unknown[] = [];
   const conditions: string[] = [];
 
+  const category = c.req.query("category");
+
   if (type_) {
     conditions.push("type = ?");
     params.push(type_);
+  }
+
+  if (category) {
+    conditions.push(`id IN (
+      SELECT pc.package_id FROM package_categories pc
+      JOIN categories cat ON pc.category_id = cat.id
+      WHERE cat.slug = ?
+    )`);
+    params.push(category);
   }
 
   if (conditions.length > 0) {
@@ -75,14 +86,26 @@ app.get("/v1/packages/:fullName", async (c) => {
     "SELECT version, yanked, created_at FROM versions WHERE package_id = ? ORDER BY created_at DESC"
   ).bind(pkg.id).all();
 
+  // Fetch categories for this package
+  const catResult = await c.env.DB.prepare(
+    `SELECT cat.slug, cat.name FROM package_categories pc
+     JOIN categories cat ON pc.category_id = cat.id
+     WHERE pc.package_id = ?`
+  ).bind(pkg.id).all();
+
   return c.json({
     full_name: pkg.full_name,
     type: pkg.type,
     description: pkg.description,
+    summary: pkg.summary ?? "",
+    capabilities: JSON.parse((pkg.capabilities as string) ?? "[]"),
     license: pkg.license,
     repository: pkg.repository,
-    keywords: JSON.parse(pkg.keywords as string ?? "[]"),
-    platforms: JSON.parse(pkg.platforms as string ?? "[]"),
+    homepage: pkg.homepage ?? "",
+    author: pkg.author ?? "",
+    keywords: JSON.parse((pkg.keywords as string) ?? "[]"),
+    platforms: JSON.parse((pkg.platforms as string) ?? "[]"),
+    categories: (catResult.results ?? []).map((row) => ({ slug: row.slug, name: row.name })),
     downloads: pkg.downloads,
     versions: versions.results ?? [],
     created_at: pkg.created_at,

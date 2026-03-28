@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import { generateId } from "../utils/response";
 import { hashToken } from "../services/auth";
+import { authMiddleware } from "../middleware/auth";
 
 const app = new Hono<AppEnv>();
 
@@ -85,9 +86,120 @@ app.post("/v1/auth/token", async (c) => {
 
 // GitHub OAuth callback (completes device flow)
 app.get("/v1/auth/callback", async (c) => {
-  // In production: exchange GitHub code for user info, update device code status
-  // For now, this is a placeholder
-  return c.json({ message: "OAuth callback — implement with GitHub OAuth" });
+  return c.json({ message: "Use /login/callback on the web app for OAuth" });
+});
+
+// GitHub OAuth — exchange a GitHub OAuth code for a session token.
+// The web app redirects to /login/callback which then calls this endpoint
+// with the temporary `code` from GitHub.  We exchange it server-side so the
+// client never needs to know the client_secret.
+app.post("/v1/auth/github", async (c) => {
+  let body: { code?: string };
+  try {
+    body = await c.req.json<{ code?: string }>();
+  } catch {
+    return c.json({ error: "invalid_request", message: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.code) {
+    return c.json({ error: "missing code" }, 400);
+  }
+
+  // Exchange the code for an access token with GitHub
+  const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      client_id: c.env.GITHUB_CLIENT_ID,
+      client_secret: c.env.GITHUB_CLIENT_SECRET,
+      code: body.code,
+    }),
+  });
+
+  const tokenData = await tokenRes.json<{
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  }>();
+
+  if (!tokenData.access_token) {
+    return c.json(
+      { error: "github_oauth_failed", message: tokenData.error_description ?? tokenData.error ?? "Unknown error" },
+      401,
+    );
+  }
+
+  // Fetch the authenticated user's profile from GitHub
+  const userRes = await fetch("https://api.github.com/user", {
+    headers: {
+      Authorization: `Bearer ${tokenData.access_token}`,
+      "User-Agent": "ctx-registry",
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (!userRes.ok) {
+    return c.json({ error: "github_user_fetch_failed" }, 502);
+  }
+
+  const ghUser = await userRes.json<{
+    id: number;
+    login: string;
+    email: string | null;
+    avatar_url: string;
+  }>();
+
+  const githubId = String(ghUser.id);
+  const username = ghUser.login;
+  const email = ghUser.email ?? "";
+  const avatarUrl = ghUser.avatar_url;
+
+  // Upsert user — create if new, update email/avatar if existing
+  let user = await c.env.DB.prepare(
+    "SELECT id FROM users WHERE github_id = ?"
+  ).bind(githubId).first();
+
+  if (user) {
+    // Update profile (email may change, avatar may change)
+    await c.env.DB.prepare(
+      "UPDATE users SET username = ?, email = ?, avatar_url = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(username, email, avatarUrl, user.id).run();
+  } else {
+    const userId = generateId();
+    await c.env.DB.prepare(
+      "INSERT INTO users (id, username, email, avatar_url, github_id) VALUES (?, ?, ?, ?, ?)"
+    ).bind(userId, username, email, avatarUrl, githubId).run();
+    user = { id: userId };
+
+    // Auto-create user scope
+    await c.env.DB.prepare(
+      "INSERT OR IGNORE INTO scopes (name, owner_type, owner_id) VALUES (?, 'user', ?)"
+    ).bind(username.toLowerCase(), user.id).run();
+  }
+
+  // Generate session token
+  const token = `ctx_${generateId()}${generateId()}`;
+  const tokenHash = await hashToken(token);
+
+  await c.env.DB.prepare(
+    "INSERT INTO api_tokens (id, user_id, token_hash, name) VALUES (?, ?, ?, 'web')"
+  ).bind(generateId(), user.id, tokenHash).run();
+
+  return c.json({ token });
+});
+
+// Get current user (validate session)
+app.get("/v1/me", authMiddleware, async (c) => {
+  const user = c.get("user");
+  return c.json({
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    avatar_url: user.avatar_url,
+  });
 });
 
 export default app;

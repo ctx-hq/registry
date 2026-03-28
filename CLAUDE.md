@@ -9,6 +9,7 @@ pnpm dev          # Local dev server
 pnpm test         # Run vitest
 pnpm typecheck    # TypeScript check
 pnpm db:migrate   # Apply D1 migrations locally
+bash scripts/deploy.sh  # Deploy to CF Workers
 ```
 
 ## Architecture
