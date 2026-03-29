@@ -8,27 +8,88 @@ import { getOrCreatePublisher } from "../services/publisher";
 
 const app = new Hono<AppEnv>();
 
-// Start device flow (mock for development)
+// Start device flow (RFC 8628)
 app.post("/v1/auth/device", async (c) => {
   const deviceCode = generateId();
   const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
   const userCode = Array.from(bytes).map(b => b.toString(36)).join("").slice(0, 8).toUpperCase();
 
-  // Store device code in KV with 15 min TTL
-  await c.env.CACHE.put(
-    `device:${deviceCode}`,
-    JSON.stringify({ user_code: userCode, status: "pending" }),
-    { expirationTtl: 900 }
-  );
+  const ttl = 900;
+
+  // Store device code + reverse mapping in KV with 15 min TTL
+  await Promise.all([
+    c.env.CACHE.put(
+      `device:${deviceCode}`,
+      JSON.stringify({ user_code: userCode, status: "pending" }),
+      { expirationTtl: ttl }
+    ),
+    c.env.CACHE.put(
+      `usercode:${userCode}`,
+      deviceCode,
+      { expirationTtl: ttl }
+    ),
+  ]);
 
   return c.json({
     device_code: deviceCode,
     user_code: userCode,
     verification_uri: "https://getctx.org/login/device",
-    expires_in: 900,
+    verification_uri_complete: `https://getctx.org/login/device?code=${userCode}`,
+    expires_in: ttl,
     interval: 5,
   });
+});
+
+// Authorize a device code (user must be logged in via web session)
+app.post("/v1/auth/device/authorize", authMiddleware, async (c) => {
+  const user = c.get("user");
+
+  let body: { user_code?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Invalid JSON body");
+  }
+
+  const userCode = body.user_code?.trim().toUpperCase();
+  if (!userCode) {
+    throw badRequest("user_code is required");
+  }
+
+  // Delete reverse mapping first as optimistic lock — if two concurrent
+  // requests race, only one will find the mapping and proceed.
+  const deviceCode = await c.env.CACHE.get(`usercode:${userCode}`);
+  if (!deviceCode) {
+    throw badRequest("Invalid or expired code");
+  }
+  await c.env.CACHE.delete(`usercode:${userCode}`);
+
+  // Check current status
+  const stored = await c.env.CACHE.get(`device:${deviceCode}`);
+  if (!stored) {
+    throw badRequest("Invalid or expired code");
+  }
+
+  const data = JSON.parse(stored);
+  if (data.status === "authorized") {
+    throw badRequest("Code already used");
+  }
+
+  // Mark as authorized — short TTL, CLI only needs to poll once
+  await c.env.CACHE.put(
+    `device:${deviceCode}`,
+    JSON.stringify({
+      user_code: userCode,
+      status: "authorized",
+      github_id: user.github_id,
+      username: user.username,
+      email: user.email ?? "",
+    }),
+    { expirationTtl: 120 }
+  );
+
+  return c.json({ authorized: true });
 });
 
 // Poll for token
@@ -47,7 +108,7 @@ app.post("/v1/auth/token", async (c) => {
 
   const data = JSON.parse(stored);
   if (data.status === "pending") {
-    return c.json({ error: "authorization_pending" });
+    return c.json({ error: "authorization_pending" }, 400);
   }
 
   if (data.status === "authorized") {
@@ -86,7 +147,7 @@ app.post("/v1/auth/token", async (c) => {
     });
   }
 
-  return c.json({ error: "authorization_pending" });
+  return c.json({ error: "authorization_pending" }, 400);
 });
 
 // GitHub OAuth callback (completes device flow)
