@@ -17,12 +17,14 @@ app.get("/v1/stats/overview", async (c) => {
         .first<{ count: number }>(),
 
       c.env.DB.prepare(
-        "SELECT COALESCE(SUM(downloads), 0) as total FROM packages WHERE visibility = 'public' AND deleted_at IS NULL",
+        `SELECT COALESCE(SUM(ds.count), 0) as total FROM download_stats ds
+         JOIN packages p ON ds.package_id = p.id
+         WHERE p.visibility = 'public' AND p.deleted_at IS NULL`,
       )
         .first<{ total: number }>(),
 
       c.env.DB.prepare(
-        "SELECT COUNT(DISTINCT publisher_id) as count FROM packages WHERE visibility = 'public' AND deleted_at IS NULL",
+        "SELECT COUNT(DISTINCT publisher_id) as count FROM packages WHERE visibility = 'public' AND deleted_at IS NULL AND publisher_id != ''",
       )
         .first<{ count: number }>(),
 

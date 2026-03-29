@@ -1,145 +1,334 @@
 import { describe, it, expect } from "vitest";
+import { Hono } from "hono";
+import type { AppEnv } from "../../src/bindings";
 
-describe("stats", () => {
-  describe("download stats UPSERT", () => {
-    it("should generate correct date format", () => {
-      const today = new Date().toISOString().slice(0, 10);
-      expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    });
-  });
+// --- Mock DB ---
 
-  describe("agent install tracking", () => {
-    it("should accept known agent names", () => {
-      const knownAgents = ["claude", "cursor", "windsurf", "codex", "copilot", "cline", "zed"];
-      const input = ["claude", "cursor"];
-      const allKnown = input.every(a => knownAgents.includes(a));
-      expect(allKnown).toBe(true);
-    });
+interface MockDB {
+  prepare(sql: string): MockStatement;
+  batch(stmts: MockStatement[]): Promise<unknown[]>;
+  _executed: Array<{ sql: string; params: unknown[] }>;
+}
 
-    it("should accept unknown agent names (open ecosystem)", () => {
-      const input = ["my-custom-agent"];
-      // Unknown agents should be accepted, not rejected
-      expect(input).toHaveLength(1);
-    });
+interface MockStatement {
+  bind(...params: unknown[]): MockStatement;
+  first<T = unknown>(): Promise<T | null>;
+  all(): Promise<{ results: unknown[] }>;
+  run(): Promise<{ success: boolean; meta: { changes: number } }>;
+}
 
-    it("should count each agent separately for multi-agent installs", () => {
-      const agents = ["claude", "cursor", "windsurf"];
-      // Each agent should get its own UPSERT row
-      expect(agents.length).toBe(3);
-    });
-  });
-
-  describe("trending calculation", () => {
-    it("should sort by weekly downloads descending", () => {
-      const packages = [
-        { name: "a", weekly: 100 },
-        { name: "b", weekly: 500 },
-        { name: "c", weekly: 250 },
-      ];
-      const sorted = [...packages].sort((a, b) => b.weekly - a.weekly);
-      expect(sorted[0].name).toBe("b");
-      expect(sorted[1].name).toBe("c");
-      expect(sorted[2].name).toBe("a");
-    });
-  });
-
-  describe("agent breakdown percentage", () => {
-    it("should calculate correct percentages", () => {
-      const breakdown = [
-        { agent: "claude", count: 470 },
-        { agent: "cursor", count: 315 },
-        { agent: "windsurf", count: 125 },
-        { agent: "other", count: 90 },
-      ];
-      const total = breakdown.reduce((sum, b) => sum + b.count, 0);
-      expect(total).toBe(1000);
-
-      const claudePercent = Math.round((470 / total) * 1000) / 10;
-      expect(claudePercent).toBe(47);
-    });
-
-    it("should handle zero total gracefully", () => {
-      const total = 0;
-      const percentage = total > 0 ? Math.round((0 / total) * 1000) / 10 : 0;
-      expect(percentage).toBe(0);
-    });
-  });
-
-  describe("telemetry input validation", () => {
-    it("should accept valid telemetry body", () => {
-      const body = {
-        package: "@scope/name",
-        version: "1.0.0",
-        agents: ["claude", "cursor"],
-        source_type: "registry",
+function createMockDB(overrides?: {
+  firstFn?: (sql: string, params: unknown[]) => unknown | null;
+  allFn?: (sql: string, params: unknown[]) => unknown[];
+}): MockDB {
+  const executed: Array<{ sql: string; params: unknown[] }> = [];
+  const db: MockDB = {
+    _executed: executed,
+    prepare(sql: string) {
+      let boundParams: unknown[] = [];
+      const stmt: MockStatement = {
+        bind(...params: unknown[]) { boundParams = params; return stmt; },
+        async first<T>(): Promise<T | null> {
+          executed.push({ sql, params: boundParams });
+          return (overrides?.firstFn?.(sql, boundParams) as T) ?? null;
+        },
+        async all() {
+          executed.push({ sql, params: boundParams });
+          return { results: overrides?.allFn?.(sql, boundParams) ?? [] };
+        },
+        async run() {
+          executed.push({ sql, params: boundParams });
+          return { success: true, meta: { changes: 1 } };
+        },
       };
-      expect(body.package).toBeTruthy();
-      expect(body.agents).toBeInstanceOf(Array);
+      return stmt;
+    },
+    async batch(stmts: MockStatement[]) {
+      return Promise.all(stmts.map(s => s.run()));
+    },
+  };
+  return db;
+}
+
+// --- Import the actual route handler ---
+import statsApp from "../../src/routes/stats";
+
+// --- Build test app that mounts the real stats routes ---
+
+function createStatsApp(dbOverrides?: Parameters<typeof createMockDB>[0]) {
+  const db = createMockDB(dbOverrides);
+
+  const app = new Hono<AppEnv>();
+  app.use("*", async (c, next) => {
+    (c as any).env = {
+      DB: db,
+      CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
+    };
+    await next();
+  });
+  app.route("/", statsApp);
+
+  const mockExecCtx = { waitUntil: () => {}, passThroughOnException: () => {} };
+  const request: typeof app.request = (input, init, env) =>
+    app.request(input, init, env, mockExecCtx as any);
+
+  return { app, db, request };
+}
+
+// --- Tests ---
+
+describe("stats routes", () => {
+  describe("GET /v1/stats/overview", () => {
+    it("should return overview with correct structure", async () => {
+      const { request } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("COUNT(*)") && sql.includes("FROM packages")) {
+            return { count: 42 };
+          }
+          if (sql.includes("SUM(ds.count)") && sql.includes("download_stats")) {
+            return { total: 1500 };
+          }
+          if (sql.includes("COUNT(DISTINCT publisher_id)")) {
+            return { count: 7 };
+          }
+          return null;
+        },
+        allFn: (sql) => {
+          if (sql.includes("GROUP BY type")) {
+            return [
+              { type: "skill", count: 30 },
+              { type: "mcp", count: 12 },
+            ];
+          }
+          return [];
+        },
+      });
+
+      const res = await request("/v1/stats/overview");
+      expect(res.status).toBe(200);
+
+      const body = await res.json() as any;
+      expect(body.total_packages).toBe(42);
+      expect(body.total_downloads).toBe(1500);
+      expect(body.total_publishers).toBe(7);
+      expect(body.breakdown).toHaveLength(2);
+      expect(body.breakdown[0]).toEqual({
+        type: "skill",
+        count: 30,
+        percentage: 71.4,
+      });
     });
 
-    it("should handle missing fields gracefully", () => {
-      const body = { package: "@scope/name" };
-      const agents = (body as any).agents ?? [];
-      const version = (body as any).version ?? "";
-      expect(agents).toHaveLength(0);
-      expect(version).toBe("");
+    it("should aggregate downloads from download_stats, not packages.downloads", async () => {
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("COUNT(*)")) return { count: 1 };
+          if (sql.includes("download_stats")) return { total: 999 };
+          if (sql.includes("COUNT(DISTINCT publisher_id)")) return { count: 1 };
+          return null;
+        },
+        allFn: () => [],
+      });
+
+      const res = await request("/v1/stats/overview");
+      const body = await res.json() as any;
+      expect(body.total_downloads).toBe(999);
+
+      // Verify the SQL references download_stats, not packages.downloads
+      const downloadQuery = db._executed.find(e => e.sql.includes("total"));
+      expect(downloadQuery?.sql).toContain("download_stats");
+      expect(downloadQuery?.sql).not.toContain("SUM(downloads)");
+    });
+
+    it("should exclude empty publisher_id from count", async () => {
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("COUNT(*)")) return { count: 5 };
+          if (sql.includes("download_stats")) return { total: 0 };
+          if (sql.includes("COUNT(DISTINCT publisher_id)")) {
+            // Verify the SQL excludes empty publisher_id
+            expect(sql).toContain("publisher_id != ''");
+            return { count: 3 };
+          }
+          return null;
+        },
+        allFn: () => [],
+      });
+
+      const res = await request("/v1/stats/overview");
+      const body = await res.json() as any;
+      expect(body.total_publishers).toBe(3);
+    });
+
+    it("should return zeros for empty registry", async () => {
+      const { request } = createStatsApp({
+        firstFn: () => null,
+        allFn: () => [],
+      });
+
+      const res = await request("/v1/stats/overview");
+      expect(res.status).toBe(200);
+
+      const body = await res.json() as any;
+      expect(body.total_packages).toBe(0);
+      expect(body.total_downloads).toBe(0);
+      expect(body.total_publishers).toBe(0);
+      expect(body.breakdown).toHaveLength(0);
+    });
+
+    it("should handle zero total in percentage calculation", async () => {
+      const { request } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("COUNT(*)")) return { count: 0 };
+          if (sql.includes("download_stats")) return { total: 0 };
+          if (sql.includes("COUNT(DISTINCT publisher_id)")) return { count: 0 };
+          return null;
+        },
+        allFn: (sql) => {
+          if (sql.includes("GROUP BY type")) return [{ type: "skill", count: 0 }];
+          return [];
+        },
+      });
+
+      const res = await request("/v1/stats/overview");
+      const body = await res.json() as any;
+      // With 0 total packages, percentage should be 0
+      expect(body.breakdown[0].percentage).toBe(0);
     });
   });
 
-  describe("registry overview", () => {
-    it("should return zero counts for empty registry", () => {
-      const result = { total_packages: 0, total_downloads: 0, total_publishers: 0, breakdown: [] };
-      expect(result.total_packages).toBe(0);
-      expect(result.total_downloads).toBe(0);
-      expect(result.total_publishers).toBe(0);
-      expect(result.breakdown).toHaveLength(0);
+  describe("GET /v1/stats/trending", () => {
+    it("should return trending packages", async () => {
+      const { request } = createStatsApp({
+        allFn: (sql) => {
+          if (sql.includes("download_stats") && sql.includes("7 days")) {
+            return [
+              { package_id: "p1", weekly_downloads: 500, full_name: "@a/b", type: "skill", description: "desc" },
+            ];
+          }
+          return [];
+        },
+      });
+
+      const res = await request("/v1/stats/trending");
+      expect(res.status).toBe(200);
+
+      const body = await res.json() as any;
+      expect(body.period).toBe("7d");
+      expect(body.packages).toHaveLength(1);
+      expect(body.packages[0].weekly_downloads).toBe(500);
     });
 
-    it("should compute correct type breakdown percentages", () => {
-      const total = 100;
-      const breakdown = [
-        { type: "skill", count: 60 },
-        { type: "mcp", count: 30 },
-        { type: "cli", count: 10 },
-      ];
-      const withPct = breakdown.map((b) => ({
-        ...b,
-        percentage: Math.round((b.count / total) * 1000) / 10,
-      }));
-      expect(withPct[0].percentage).toBe(60);
-      expect(withPct[1].percentage).toBe(30);
-      expect(withPct[2].percentage).toBe(10);
+    it("should respect limit parameter", async () => {
+      const { request, db } = createStatsApp({
+        allFn: () => [],
+      });
+
+      await request("/v1/stats/trending?limit=5");
+      const limitCall = db._executed.find(e => e.sql.includes("download_stats") && e.sql.includes("LIMIT"));
+      expect(limitCall?.params[0]).toBe(5);
     });
 
-    it("should handle zero total packages in percentage calc", () => {
-      const total = 0;
-      const percentage = total > 0 ? Math.round((0 / total) * 1000) / 10 : 0;
-      expect(percentage).toBe(0);
+    it("should cap limit at 100", async () => {
+      const { request, db } = createStatsApp({
+        allFn: () => [],
+      });
+
+      await request("/v1/stats/trending?limit=999");
+      const limitCall = db._executed.find(e => e.sql.includes("LIMIT"));
+      expect(limitCall?.params[0]).toBe(100);
+    });
+  });
+
+  describe("GET /v1/stats/agents", () => {
+    it("should return agent ranking", async () => {
+      const { request } = createStatsApp({
+        allFn: (sql) => {
+          if (sql.includes("agent_installs") && sql.includes("GROUP BY agent_name")) {
+            return [
+              { name: "claude", total_installs: 1000, packages: 50 },
+              { name: "cursor", total_installs: 800, packages: 40 },
+            ];
+          }
+          return [];
+        },
+      });
+
+      const res = await request("/v1/stats/agents");
+      expect(res.status).toBe(200);
+
+      const body = await res.json() as any;
+      expect(body.agents).toHaveLength(2);
+      expect(body.agents[0].name).toBe("claude");
+    });
+  });
+
+  describe("POST /v1/telemetry/install", () => {
+    it("should accept valid telemetry and write to download_stats", async () => {
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) {
+            return { id: "pkg-1", visibility: "public" };
+          }
+          return null;
+        },
+      });
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ package: "@scope/name", version: "1.0.0", agents: ["claude"] }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as any;
+      expect(body.ok).toBe(true);
     });
 
-    it("should only include types that have packages", () => {
-      const breakdown = [
-        { type: "skill", count: 50, percentage: 62.5 },
-        { type: "mcp", count: 30, percentage: 37.5 },
-      ];
-      expect(breakdown).toHaveLength(2);
-      expect(breakdown.find((b) => b.type === "cli")).toBeUndefined();
+    it("should not track private packages", async () => {
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) {
+            return { id: "pkg-1", visibility: "private" };
+          }
+          return null;
+        },
+      });
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ package: "@scope/private-pkg" }),
+      });
+
+      expect(res.status).toBe(200);
+      // Should not have written to download_stats
+      const downloadWrites = db._executed.filter(e => e.sql.includes("download_stats"));
+      expect(downloadWrites).toHaveLength(0);
     });
 
-    it("should handle rounding in percentages", () => {
-      const total = 3;
-      const pcts = [1, 1, 1].map((c) => Math.round((c / total) * 1000) / 10);
-      // Each is 33.3%, sum is 99.9% — acceptable rounding behavior
-      expect(pcts).toEqual([33.3, 33.3, 33.3]);
-      expect(pcts.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 0);
+    it("should silently accept malformed body", async () => {
+      const { request } = createStatsApp();
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "not json",
+      });
+
+      expect(res.status).toBe(200);
     });
 
-    it("should use COALESCE for safe SUM on empty downloads", () => {
-      // When no packages exist, SUM(downloads) returns NULL
-      // COALESCE(NULL, 0) should return 0
-      const downloadsResult = { total: null };
-      const safeTotal = downloadsResult?.total ?? 0;
-      expect(safeTotal).toBe(0);
+    it("should silently accept missing package field", async () => {
+      const { request } = createStatsApp();
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: "1.0.0" }),
+      });
+
+      expect(res.status).toBe(200);
     });
   });
 });
