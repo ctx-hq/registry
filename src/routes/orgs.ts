@@ -4,7 +4,7 @@ import { authMiddleware, optionalAuth } from "../middleware/auth";
 import { badRequest, notFound, forbidden } from "../utils/errors";
 import { isValidScope } from "../utils/naming";
 import { generateId } from "../utils/response";
-import { createOrgPublisher } from "../services/publisher";
+import { createOrgPublisher, getPublisherForScope, canPublish } from "../services/publisher";
 
 const app = new Hono<AppEnv>();
 
@@ -215,20 +215,20 @@ app.get("/v1/orgs/:name/packages", optionalAuth, async (c) => {
 
   // Members see all visibility levels; others see only public
   const user = c.get("user");
-  let isMember = false;
-  if (user) {
-    const membership = await c.env.DB.prepare(
-      "SELECT role FROM org_members WHERE org_id = ? AND user_id = ?",
-    ).bind(org.id, user.id).first();
-    isMember = membership !== null;
+  const publisher = await getPublisherForScope(c.env.DB, name!);
+  const isMember = user && publisher ? await canPublish(c.env.DB, user.id, publisher) : false;
+
+  const conditions: string[] = ["scope = ?", "deleted_at IS NULL"];
+  const params: unknown[] = [name];
+  if (!isMember) {
+    conditions.push("visibility = 'public'");
   }
-  const visibilityClause = isMember ? "" : "AND visibility = 'public'";
 
   const packages = await c.env.DB.prepare(
     `SELECT full_name, type, description, summary, visibility, downloads, created_at
-     FROM packages WHERE scope = ? ${visibilityClause} AND deleted_at IS NULL
+     FROM packages WHERE ${conditions.join(" AND ")}
      ORDER BY downloads DESC`,
-  ).bind(name).all();
+  ).bind(...params).all();
 
   return c.json({ packages: packages.results ?? [] });
 });

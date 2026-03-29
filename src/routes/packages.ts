@@ -4,7 +4,7 @@ import type { Visibility } from "../models/types";
 import { notFound, badRequest, forbidden } from "../utils/errors";
 import { getLatestVersion } from "../services/package";
 import { authMiddleware, optionalAuth } from "../middleware/auth";
-import { canPublish, getPublisherForScope, canAccessPackage, getUserPublisherIds } from "../services/publisher";
+import { canPublish, getPublisherForScope, canAccessPackage } from "../services/publisher";
 import { parseFullName } from "../utils/naming";
 import { upsertSearchDigest } from "../services/publish";
 
@@ -21,17 +21,17 @@ app.get("/v1/packages", optionalAuth, async (c) => {
   const params: unknown[] = [];
   const conditions: string[] = ["deleted_at IS NULL"];
 
-  // Visibility: show public to all, plus private/unlisted to authorized users
+  // Visibility: show public to all, plus private/unlisted to authorized publishers
   const user = c.get("user");
   if (user) {
-    const pubIds = await getUserPublisherIds(c.env.DB, user.id);
-    if (pubIds.length > 0) {
-      const placeholders = pubIds.map(() => "?").join(",");
-      conditions.push(`(visibility = 'public' OR publisher_id IN (${placeholders}))`);
-      params.push(...pubIds);
-    } else {
-      conditions.push("visibility = 'public'");
-    }
+    conditions.push(`(visibility = 'public' OR publisher_id IN (
+      SELECT id FROM publishers WHERE user_id = ? AND kind = 'user'
+      UNION
+      SELECT p.id FROM publishers p
+      JOIN org_members m ON p.org_id = m.org_id
+      WHERE m.user_id = ? AND p.kind = 'org'
+    ))`);
+    params.push(user.id, user.id);
   } else {
     conditions.push("visibility = 'public'");
   }

@@ -8,7 +8,7 @@ const app = new Hono<AppEnv>();
 
 // Get publisher profile
 app.get("/v1/publishers/:slug", optionalAuth, async (c) => {
-  const slug = c.req.param("slug");
+  const slug = c.req.param("slug")!;
   const publisher = await getPublisherBySlug(c.env.DB, slug);
 
   if (!publisher) throw notFound(`Publisher @${slug} not found`);
@@ -36,7 +36,7 @@ app.get("/v1/publishers/:slug", optionalAuth, async (c) => {
 
 // List publisher's packages
 app.get("/v1/publishers/:slug/packages", optionalAuth, async (c) => {
-  const slug = c.req.param("slug");
+  const slug = c.req.param("slug")!;
   const publisher = await getPublisherBySlug(c.env.DB, slug);
 
   if (!publisher) throw notFound(`Publisher @${slug} not found`);
@@ -48,16 +48,19 @@ app.get("/v1/publishers/:slug/packages", optionalAuth, async (c) => {
   // Members see all visibility levels; others see only public
   const user = c.get("user");
   const isMember = user ? await canPublish(c.env.DB, user.id, publisher) : false;
-  const visibilityClause = isMember ? "" : "AND p.visibility = 'public'";
 
-  let baseWhere = `p.publisher_id = ? ${visibilityClause} AND p.deleted_at IS NULL`;
+  const conditions: string[] = ["p.publisher_id = ?", "p.deleted_at IS NULL"];
   const baseParams: unknown[] = [publisher.id];
+  if (!isMember) {
+    conditions.push("p.visibility = 'public'");
+  }
 
   if (type_) {
-    baseWhere += " AND p.type = ?";
+    conditions.push("p.type = ?");
     baseParams.push(type_);
   }
 
+  const baseWhere = conditions.join(" AND ");
   const [countResult, packages] = await Promise.all([
     c.env.DB.prepare(`SELECT COUNT(*) as count FROM packages p WHERE ${baseWhere}`)
       .bind(...baseParams)

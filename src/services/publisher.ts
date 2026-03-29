@@ -122,27 +122,6 @@ export async function canPublish(
 }
 
 /**
- * Get all publisher IDs a user has access to (personal + org memberships).
- * Used for visibility-aware list queries.
- */
-export async function getUserPublisherIds(
-  db: D1Database,
-  userId: string,
-): Promise<string[]> {
-  const result = await db
-    .prepare(
-      `SELECT id FROM publishers WHERE user_id = ? AND kind = 'user'
-       UNION
-       SELECT p.id FROM publishers p
-       JOIN org_members m ON p.org_id = m.org_id
-       WHERE m.user_id = ? AND p.kind = 'org'`,
-    )
-    .bind(userId, userId)
-    .all();
-  return (result.results ?? []).map((r) => r.id as string);
-}
-
-/**
  * Get a publisher by slug.
  */
 export async function getPublisherBySlug(
