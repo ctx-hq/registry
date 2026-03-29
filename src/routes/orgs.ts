@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, optionalAuth } from "../middleware/auth";
 import { badRequest, notFound, forbidden } from "../utils/errors";
 import { isValidScope } from "../utils/naming";
 import { generateId } from "../utils/response";
@@ -208,14 +208,25 @@ app.get("/v1/orgs", authMiddleware, async (c) => {
 });
 
 // List org packages
-app.get("/v1/orgs/:name/packages", async (c) => {
+app.get("/v1/orgs/:name/packages", optionalAuth, async (c) => {
   const name = c.req.param("name");
   const org = await c.env.DB.prepare("SELECT id FROM orgs WHERE name = ?").bind(name).first();
   if (!org) throw notFound(`Organization @${name} not found`);
 
+  // Members see all visibility levels; others see only public
+  const user = c.get("user");
+  let isMember = false;
+  if (user) {
+    const membership = await c.env.DB.prepare(
+      "SELECT role FROM org_members WHERE org_id = ? AND user_id = ?",
+    ).bind(org.id, user.id).first();
+    isMember = membership !== null;
+  }
+  const visibilityClause = isMember ? "" : "AND visibility = 'public'";
+
   const packages = await c.env.DB.prepare(
-    `SELECT full_name, type, description, summary, downloads, created_at
-     FROM packages WHERE scope = ? AND visibility = 'public' AND deleted_at IS NULL
+    `SELECT full_name, type, description, summary, visibility, downloads, created_at
+     FROM packages WHERE scope = ? ${visibilityClause} AND deleted_at IS NULL
      ORDER BY downloads DESC`,
   ).bind(name).all();
 

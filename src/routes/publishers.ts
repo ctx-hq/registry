@@ -1,19 +1,27 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import { notFound } from "../utils/errors";
-import { getPublisherBySlug } from "../services/publisher";
+import { optionalAuth } from "../middleware/auth";
+import { getPublisherBySlug, canPublish } from "../services/publisher";
 
 const app = new Hono<AppEnv>();
 
 // Get publisher profile
-app.get("/v1/publishers/:slug", async (c) => {
+app.get("/v1/publishers/:slug", optionalAuth, async (c) => {
   const slug = c.req.param("slug");
   const publisher = await getPublisherBySlug(c.env.DB, slug);
 
   if (!publisher) throw notFound(`Publisher @${slug} not found`);
 
+  // Members see total count; others see only public count
+  const user = c.get("user");
+  const isMember = user ? await canPublish(c.env.DB, user.id, publisher) : false;
+  const countWhere = isMember
+    ? "publisher_id = ? AND deleted_at IS NULL"
+    : "publisher_id = ? AND visibility = 'public' AND deleted_at IS NULL";
+
   const packageCount = await c.env.DB.prepare(
-    "SELECT COUNT(*) as count FROM packages WHERE publisher_id = ? AND visibility = 'public' AND deleted_at IS NULL",
+    `SELECT COUNT(*) as count FROM packages WHERE ${countWhere}`,
   )
     .bind(publisher.id)
     .first<{ count: number }>();
@@ -27,7 +35,7 @@ app.get("/v1/publishers/:slug", async (c) => {
 });
 
 // List publisher's packages
-app.get("/v1/publishers/:slug/packages", async (c) => {
+app.get("/v1/publishers/:slug/packages", optionalAuth, async (c) => {
   const slug = c.req.param("slug");
   const publisher = await getPublisherBySlug(c.env.DB, slug);
 
@@ -37,7 +45,12 @@ app.get("/v1/publishers/:slug/packages", async (c) => {
   const offset = parseInt(c.req.query("offset") ?? "0");
   const type_ = c.req.query("type");
 
-  let baseWhere = "p.publisher_id = ? AND p.visibility = 'public' AND p.deleted_at IS NULL";
+  // Members see all visibility levels; others see only public
+  const user = c.get("user");
+  const isMember = user ? await canPublish(c.env.DB, user.id, publisher) : false;
+  const visibilityClause = isMember ? "" : "AND p.visibility = 'public'";
+
+  let baseWhere = `p.publisher_id = ? ${visibilityClause} AND p.deleted_at IS NULL`;
   const baseParams: unknown[] = [publisher.id];
 
   if (type_) {

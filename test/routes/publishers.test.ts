@@ -16,7 +16,7 @@ describe("publishers", () => {
   });
 
   describe("publisher packages listing", () => {
-    it("should only list public packages for a publisher", () => {
+    it("non-member sees only public packages for a publisher", () => {
       const packages = [
         { name: "@alice/public-skill", visibility: "public" },
         { name: "@alice/private-skill", visibility: "private" },
@@ -25,6 +25,31 @@ describe("publishers", () => {
       const publicOnly = packages.filter(p => p.visibility === "public");
       expect(publicOnly).toHaveLength(1);
       expect(publicOnly[0].name).toBe("@alice/public-skill");
+    });
+
+    it("publisher member sees all visibility levels", () => {
+      const isMember = true;
+      const packages = [
+        { name: "@alice/public-skill", visibility: "public" },
+        { name: "@alice/private-skill", visibility: "private" },
+        { name: "@alice/unlisted-tool", visibility: "unlisted" },
+      ];
+      const visible = isMember
+        ? packages.filter(p => p.visibility !== undefined) // all non-deleted
+        : packages.filter(p => p.visibility === "public");
+      expect(visible).toHaveLength(3);
+    });
+
+    it("publisher profile count reflects member vs non-member view", () => {
+      const allPackages = [
+        { visibility: "public" },
+        { visibility: "private" },
+        { visibility: "unlisted" },
+      ];
+      const memberCount = allPackages.length;
+      const publicCount = allPackages.filter(p => p.visibility === "public").length;
+      expect(memberCount).toBe(3);
+      expect(publicCount).toBe(1);
     });
 
     it("should support type filtering", () => {

@@ -4,22 +4,37 @@ import type { Visibility } from "../models/types";
 import { notFound, badRequest, forbidden } from "../utils/errors";
 import { getLatestVersion } from "../services/package";
 import { authMiddleware, optionalAuth } from "../middleware/auth";
-import { canPublish, getPublisherForScope, canAccessPackage } from "../services/publisher";
+import { canPublish, getPublisherForScope, canAccessPackage, getUserPublisherIds } from "../services/publisher";
 import { parseFullName } from "../utils/naming";
 import { upsertSearchDigest } from "../services/publish";
 
 const app = new Hono<AppEnv>();
 
 // List packages
-app.get("/v1/packages", async (c) => {
+app.get("/v1/packages", optionalAuth, async (c) => {
   const type_ = c.req.query("type");
   const sort = c.req.query("sort") ?? "downloads";
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20") || 20, 100);
   const offset = parseInt(c.req.query("offset") ?? "0") || 0;
 
-  let query = "SELECT id, full_name, type, description, downloads, created_at, updated_at FROM packages";
+  let query = "SELECT id, full_name, type, description, visibility, downloads, created_at, updated_at FROM packages";
   const params: unknown[] = [];
-  const conditions: string[] = ["visibility = 'public'", "deleted_at IS NULL"];
+  const conditions: string[] = ["deleted_at IS NULL"];
+
+  // Visibility: show public to all, plus private/unlisted to authorized users
+  const user = c.get("user");
+  if (user) {
+    const pubIds = await getUserPublisherIds(c.env.DB, user.id);
+    if (pubIds.length > 0) {
+      const placeholders = pubIds.map(() => "?").join(",");
+      conditions.push(`(visibility = 'public' OR publisher_id IN (${placeholders}))`);
+      params.push(...pubIds);
+    } else {
+      conditions.push("visibility = 'public'");
+    }
+  } else {
+    conditions.push("visibility = 'public'");
+  }
 
   const category = c.req.query("category");
 
@@ -62,6 +77,7 @@ app.get("/v1/packages", async (c) => {
         description: pkg.description,
         version: (ver?.version as string) ?? "",
         downloads: pkg.downloads,
+        visibility: pkg.visibility ?? "public",
         repository: pkg.repository ?? "",
       };
     })

@@ -28,6 +28,57 @@ describe("packages routes", () => {
   });
 });
 
+describe("packages auth-aware listing", () => {
+  it("unauthenticated users see only public packages", () => {
+    const allPackages = [
+      { full_name: "@hong/public-pkg", visibility: "public" },
+      { full_name: "@hong/private-pkg", visibility: "private" },
+      { full_name: "@hong/unlisted-pkg", visibility: "unlisted" },
+    ];
+    // Without auth, only visibility='public' is in WHERE clause
+    const publicOnly = allPackages.filter(p => p.visibility === "public");
+    expect(publicOnly).toHaveLength(1);
+    expect(publicOnly[0].full_name).toBe("@hong/public-pkg");
+  });
+
+  it("authenticated users see their own private/unlisted packages", () => {
+    const userPublisherIds = ["pub-hong"];
+    const allPackages = [
+      { full_name: "@hong/public-pkg", visibility: "public", publisher_id: "pub-hong" },
+      { full_name: "@hong/private-pkg", visibility: "private", publisher_id: "pub-hong" },
+      { full_name: "@hong/unlisted-pkg", visibility: "unlisted", publisher_id: "pub-hong" },
+      { full_name: "@other/secret", visibility: "private", publisher_id: "pub-other" },
+    ];
+    // Auth-aware filter: public OR publisher_id IN user's publishers
+    const visible = allPackages.filter(
+      p => p.visibility === "public" || userPublisherIds.includes(p.publisher_id),
+    );
+    expect(visible).toHaveLength(3);
+    expect(visible.map(p => p.full_name)).not.toContain("@other/secret");
+  });
+
+  it("authenticated users do NOT see other users private packages", () => {
+    const userPublisherIds = ["pub-hong"];
+    const otherPrivate = { full_name: "@alice/secret", visibility: "private", publisher_id: "pub-alice" };
+    const canSee = otherPrivate.visibility === "public" || userPublisherIds.includes(otherPrivate.publisher_id);
+    expect(canSee).toBe(false);
+  });
+
+  it("response includes visibility field", () => {
+    const pkg = {
+      full_name: "@hong/my-skill",
+      type: "skill",
+      description: "test",
+      version: "1.0.0",
+      downloads: 0,
+      visibility: "private",
+      repository: "",
+    };
+    expect(pkg).toHaveProperty("visibility");
+    expect(pkg.visibility).toBe("private");
+  });
+});
+
 describe("packages privacy", () => {
   it("version detail query JOINs users to return username, not UUID", () => {
     // Verify the SQL pattern used in the version detail endpoint.

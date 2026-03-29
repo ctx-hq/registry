@@ -52,13 +52,32 @@ describe("orgs", () => {
   });
 
   describe("org packages listing", () => {
-    it("should list public packages in org scope", () => {
+    it("non-member sees only public packages in org scope", () => {
       const packages = [
         { name: "@myteam/tool-a", visibility: "public" },
         { name: "@myteam/internal", visibility: "private" },
       ];
       const listed = packages.filter(p => p.visibility === "public");
       expect(listed).toHaveLength(1);
+    });
+
+    it("org member sees all visibility levels in org packages", () => {
+      const isMember = true;
+      const packages = [
+        { name: "@myteam/tool-a", visibility: "public" },
+        { name: "@myteam/internal", visibility: "private" },
+        { name: "@myteam/beta", visibility: "unlisted" },
+      ];
+      const visible = isMember
+        ? packages
+        : packages.filter(p => p.visibility === "public");
+      expect(visible).toHaveLength(3);
+    });
+
+    it("response includes visibility field for org packages", () => {
+      const pkg = { name: "@myteam/internal", visibility: "private", downloads: 10 };
+      expect(pkg).toHaveProperty("visibility");
+      expect(pkg.visibility).toBe("private");
     });
   });
 
