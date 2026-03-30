@@ -60,6 +60,27 @@ export function validatePublishInput(input: PublishInput): PublishValidation {
   };
 }
 
+async function insertSkillMetadata(
+  db: D1Database,
+  versionId: string,
+  skill: Record<string, unknown>,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO skill_metadata (version_id, entry, compatibility, user_invocable, tags, origin)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      versionId,
+      (skill.entry as string) ?? "",
+      (skill.compatibility as string) ?? "",
+      skill.user_invocable !== false ? 1 : 0,
+      JSON.stringify(skill.tags ?? []),
+      (skill.origin as string) ?? "",
+    )
+    .run();
+}
+
 /**
  * Extract type-specific metadata from manifest and insert into metadata tables.
  */
@@ -72,19 +93,7 @@ export async function extractTypeMetadata(
 
   if (type_ === "skill") {
     const skill = (manifest.skill ?? {}) as Record<string, unknown>;
-    await db
-      .prepare(
-        `INSERT OR REPLACE INTO skill_metadata (version_id, entry, compatibility, user_invocable, tags)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        versionId,
-        (skill.entry as string) ?? "",
-        (skill.compatibility as string) ?? "",
-        skill.user_invocable !== false ? 1 : 0,
-        JSON.stringify(skill.tags ?? []),
-      )
-      .run();
+    await insertSkillMetadata(db, versionId, skill);
   }
 
   if (type_ === "mcp") {
@@ -124,6 +133,12 @@ export async function extractTypeMetadata(
         JSON.stringify(require_.env ?? []),
       )
       .run();
+
+    // CLI packages can bundle a skill section (Skill-Native CLI pattern)
+    if (manifest.skill) {
+      const skill = manifest.skill as Record<string, unknown>;
+      await insertSkillMetadata(db, versionId, skill);
+    }
   }
 
   // Install metadata (all types can have install spec)
@@ -131,8 +146,8 @@ export async function extractTypeMetadata(
   if (Object.keys(install).length > 0) {
     await db
       .prepare(
-        `INSERT OR REPLACE INTO install_metadata (version_id, source, brew, npm, pip, cargo, platforms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO install_metadata (version_id, source, brew, npm, pip, cargo, script, platforms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         versionId,
@@ -141,6 +156,7 @@ export async function extractTypeMetadata(
         (install.npm as string) ?? "",
         (install.pip as string) ?? "",
         (install.cargo as string) ?? "",
+        (install.script as string) ?? "",
         JSON.stringify(install.platforms ?? {}),
       )
       .run();
