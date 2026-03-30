@@ -352,7 +352,12 @@ app.delete("/v1/packages/:fullName", authMiddleware, async (c) => {
   ).bind(pkg.id).all<{ id: string }>();
   const vectorChunkIds = (vectorChunks.results ?? []).map(r => r.id);
 
-  // Hard delete: metadata → versions → dist-tags → access → search → stats → vectors → package
+  // Hard delete — order matters for FK constraints:
+  // 1. metadata (FK → versions ON DELETE CASCADE, but explicit is safer)
+  // 2. dist_tags (FK → versions without CASCADE — must delete before versions)
+  // 3. versions (FK → packages)
+  // 4. package-level tables
+  // 5. package itself
   const stmts: D1PreparedStatement[] = [];
   for (const vid of versionIds) {
     stmts.push(c.env.DB.prepare("DELETE FROM skill_metadata WHERE version_id = ?").bind(vid));
@@ -361,8 +366,8 @@ app.delete("/v1/packages/:fullName", authMiddleware, async (c) => {
     stmts.push(c.env.DB.prepare("DELETE FROM install_metadata WHERE version_id = ?").bind(vid));
     stmts.push(c.env.DB.prepare("DELETE FROM trust_checks WHERE version_id = ?").bind(vid));
   }
-  stmts.push(c.env.DB.prepare("DELETE FROM versions WHERE package_id = ?").bind(pkg.id));
   stmts.push(c.env.DB.prepare("DELETE FROM dist_tags WHERE package_id = ?").bind(pkg.id));
+  stmts.push(c.env.DB.prepare("DELETE FROM versions WHERE package_id = ?").bind(pkg.id));
   stmts.push(c.env.DB.prepare("DELETE FROM package_access WHERE package_id = ?").bind(pkg.id));
   stmts.push(c.env.DB.prepare("DELETE FROM search_digest WHERE package_id = ?").bind(pkg.id));
   stmts.push(c.env.DB.prepare("DELETE FROM download_stats WHERE package_id = ?").bind(pkg.id));
@@ -382,10 +387,11 @@ app.delete("/v1/packages/:fullName", authMiddleware, async (c) => {
   }
 
   // Best-effort cleanup: R2 archives + Vectorize index
-  await Promise.allSettled([
-    ...formulaKeys.map(key => c.env.FORMULAS.delete(key)),
-    ...(vectorChunkIds.length > 0 ? [c.env.VECTORIZE.deleteByIds(vectorChunkIds)] : []),
-  ]);
+  const cleanups: Promise<unknown>[] = formulaKeys.map(key => c.env.FORMULAS.delete(key));
+  if (vectorChunkIds.length > 0 && c.env.VECTORIZE) {
+    cleanups.push(c.env.VECTORIZE.deleteByIds(vectorChunkIds));
+  }
+  await Promise.allSettled(cleanups);
 
   return c.json({ full_name: fullName, deleted: true, versions_removed: versionIds.length });
 });
@@ -455,7 +461,7 @@ app.delete("/v1/packages/:fullName/versions/:version", authMiddleware, async (c)
       c.env.DB.prepare("DELETE FROM packages WHERE id = ?").bind(pkg.id),
     ]);
 
-    if (vectorChunkIds.length > 0) {
+    if (vectorChunkIds.length > 0 && c.env.VECTORIZE) {
       await c.env.VECTORIZE.deleteByIds(vectorChunkIds).catch(() => {});
     }
 
