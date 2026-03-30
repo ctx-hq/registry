@@ -121,8 +121,8 @@ export async function extractTypeMetadata(
     const require_ = (cli.require ?? {}) as Record<string, unknown>;
     await db
       .prepare(
-        `INSERT OR REPLACE INTO cli_metadata (version_id, binary, verify, compatible, require_bins, require_env)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO cli_metadata (version_id, binary, verify, compatible, require_bins, require_env, auth)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         versionId,
@@ -131,6 +131,7 @@ export async function extractTypeMetadata(
         (cli.compatible as string) ?? "",
         JSON.stringify(require_.bins ?? []),
         JSON.stringify(require_.env ?? []),
+        (cli.auth as string) ?? "",
       )
       .run();
 
@@ -146,8 +147,8 @@ export async function extractTypeMetadata(
   if (Object.keys(install).length > 0) {
     await db
       .prepare(
-        `INSERT OR REPLACE INTO install_metadata (version_id, source, brew, npm, pip, cargo, script, platforms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO install_metadata (version_id, source, brew, npm, pip, gem, cargo, script, platforms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         versionId,
@@ -155,6 +156,7 @@ export async function extractTypeMetadata(
         (install.brew as string) ?? "",
         (install.npm as string) ?? "",
         (install.pip as string) ?? "",
+        (install.gem as string) ?? "",
         (install.cargo as string) ?? "",
         (install.script as string) ?? "",
         JSON.stringify(install.platforms ?? {}),
