@@ -1,6 +1,7 @@
 import { isValidFullName, parseFullName } from "../utils/naming";
 import { isValidSemVer, parseSemVer, compareSemVer } from "../utils/semver";
 import { generateId } from "../utils/response";
+import { mapToMCPCategory } from "./categories";
 
 export interface PublishInput {
   manifest: Record<string, unknown>;
@@ -98,10 +99,13 @@ export async function extractTypeMetadata(
 
   if (type_ === "mcp") {
     const mcp = (manifest.mcp ?? {}) as Record<string, unknown>;
+    const keywords = Array.isArray(manifest.keywords) ? manifest.keywords as string[] : [];
+    const description = (manifest.description as string) ?? "";
+    const category = mapToMCPCategory(keywords, description);
     await db
       .prepare(
-        `INSERT OR REPLACE INTO mcp_metadata (version_id, transport, command, args, url, env_vars, tools, resources)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO mcp_metadata (version_id, transport, command, args, url, env_vars, tools, resources, category)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         versionId,
@@ -112,6 +116,7 @@ export async function extractTypeMetadata(
         JSON.stringify(mcp.env ?? []),
         JSON.stringify(mcp.tools ?? []),
         JSON.stringify(mcp.resources ?? []),
+        category,
       )
       .run();
   }

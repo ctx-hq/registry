@@ -7,3 +7,4 @@ wrangler.toml
 
 # Operational scripts (not product code)
 scripts/hub/
+.claude/

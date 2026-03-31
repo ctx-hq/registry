@@ -23,6 +23,7 @@ import publishers from "./routes/publishers";
 import sync from "./routes/sync";
 import transfers from "./routes/transfers";
 import notifications from "./routes/notifications";
+import mcp from "./routes/mcp";
 import { resolvePackageName } from "./services/redirect";
 import { cleanupOldNotifications } from "./services/notification";
 
@@ -100,6 +101,7 @@ app.route("/", publishers);
 app.route("/", sync);
 app.route("/", transfers);
 app.route("/", notifications);
+app.route("/", mcp);
 app.route("/", root);
 
 // 404 handler — consistent JSON format for unmatched routes

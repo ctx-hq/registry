@@ -10,6 +10,7 @@ import { upsertSearchDigest } from "../services/publish";
 import { parseSemVer, compareSemVer } from "../utils/semver";
 import { getPackageAccess, grantPackageAccess, revokePackageAccess } from "../services/package-access";
 import { renamePackage } from "../services/rename";
+import { parseJsonArray } from "../utils/response";
 
 const app = new Hono<AppEnv>();
 
@@ -150,6 +151,29 @@ app.get("/v1/packages/:fullName", optionalAuth, async (c) => {
     distTags[row.tag as string] = row.version as string;
   }
 
+  // Fetch MCP-specific metadata for MCP packages
+  let mcpDetail = null;
+  if (pkg.type === "mcp") {
+    const mm = await c.env.DB.prepare(
+      `SELECT mm.transport, mm.command, mm.args, mm.url, mm.env_vars, mm.tools, mm.resources, mm.category
+       FROM mcp_metadata mm
+       JOIN dist_tags dt ON dt.version_id = mm.version_id
+       WHERE dt.package_id = ? AND dt.tag = 'latest'`
+    ).bind(pkg.id).first();
+    if (mm) {
+      mcpDetail = {
+        transport: mm.transport ?? "stdio",
+        command: mm.command ?? "",
+        args: parseJsonArray(mm.args as string),
+        url: mm.url ?? "",
+        env_vars: parseJsonArray(mm.env_vars as string),
+        tools: parseJsonArray(mm.tools as string),
+        resources: parseJsonArray(mm.resources as string),
+        category: mm.category ?? "",
+      };
+    }
+  }
+
   return c.json({
     full_name: pkg.full_name,
     type: pkg.type,
@@ -168,6 +192,7 @@ app.get("/v1/packages/:fullName", optionalAuth, async (c) => {
     publisher: publisher ? { slug: publisher.slug, kind: publisher.kind } : null,
     dist_tags: distTags,
     versions: versions.results ?? [],
+    mcp_detail: mcpDetail,
     created_at: pkg.created_at,
     updated_at: pkg.updated_at,
   });

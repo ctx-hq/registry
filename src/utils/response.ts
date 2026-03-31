@@ -12,3 +12,13 @@ export function errorResponse(c: Context, status: ContentfulStatusCode, message:
 export function generateId(): string {
   return crypto.randomUUID().replace(/-/g, "");
 }
+
+export function parseJsonArray(json: string | null | undefined): unknown[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
