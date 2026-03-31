@@ -138,30 +138,35 @@ app.post("/v1/packages", authMiddleware, async (c) => {
   }
 
   const keywords = JSON.stringify(manifest.keywords ?? []);
+  const license = (manifest.license as string) ?? "";
   const summary = hubMeta.summary ?? "";
   const capabilities = hubMeta.capabilities ? JSON.stringify(hubMeta.capabilities) : "[]";
-  const author = hubMeta.author ?? "";
-  const homepage = hubMeta.homepage ?? "";
+  const author = hubMeta.author ?? (manifest.author as string) ?? "";
+  const homepage = hubMeta.homepage ?? (manifest.homepage as string) ?? "";
   const repository = (manifest.repository as string) ?? hubMeta.repository ?? "";
   const importSource = hubMeta.import_source ?? "";
   const importExternalId = hubMeta.import_external_id ?? "";
 
   if (!pkg) {
     await c.env.DB.prepare(
-      `INSERT INTO packages (id, scope, name, full_name, type, description, keywords, summary, capabilities,
+      `INSERT INTO packages (id, scope, name, full_name, type, description, keywords, license, summary, capabilities,
        author, homepage, repository, import_source, import_external_id, owner_id, publisher_id, visibility, mutable, source_repo)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       pkgId, parsed.scope, parsed.name, name, type_, description,
-      keywords, summary, capabilities, author, homepage, repository,
+      keywords, license, summary, capabilities, author, homepage, repository,
       importSource, importExternalId, user.id, publisher.id, visibility, mutable, repository,
     ).run();
   } else {
     // Update metadata on re-publish (including visibility if explicitly changed)
     await c.env.DB.prepare(
-      "UPDATE packages SET description = ?, keywords = ?, visibility = ?, mutable = ?, updated_at = datetime('now') WHERE id = ?",
-    ).bind(description, keywords, visibility, mutable, pkgId).run();
+      "UPDATE packages SET description = ?, keywords = ?, license = ?, author = ?, homepage = ?, repository = ?, visibility = ?, mutable = ?, updated_at = datetime('now') WHERE id = ?",
+    ).bind(description, keywords, license, author, homepage, repository, visibility, mutable, pkgId).run();
   }
+
+  // Always store manifest as JSON for consistent downstream consumption
+  const manifestJson = JSON.stringify(manifest);
+  const manifestHash = await computeSHA256(manifestJson);
 
   // ── Mutable version handling ──
   const existingVersion = await c.env.DB.prepare(
@@ -180,7 +185,7 @@ app.post("/v1/packages", authMiddleware, async (c) => {
       ]);
       await c.env.DB.prepare(
         "UPDATE versions SET manifest = ?, sha256 = ?, trust_tier = 'unverified', created_at = datetime('now') WHERE id = ?",
-      ).bind(manifestText, await computeSHA256(manifestText), existingVersion.id).run();
+      ).bind(manifestJson, manifestHash, existingVersion.id).run();
     } else {
       throw conflict(`Version ${version} already exists for ${name}`);
     }
@@ -193,9 +198,6 @@ app.post("/v1/packages", authMiddleware, async (c) => {
     formulaKey = `${name}/${version}/formula.tar.gz`;
     await c.env.FORMULAS.put(formulaKey, await archive.arrayBuffer());
   }
-
-  // ── Create version (if not mutable overwrite) ──
-  const manifestHash = await computeSHA256(manifestText);
   const versionId = existingVersion
     ? (existingVersion.id as string)
     : generateId();
@@ -204,7 +206,7 @@ app.post("/v1/packages", authMiddleware, async (c) => {
     await c.env.DB.prepare(
       `INSERT INTO versions (id, package_id, version, manifest, formula_key, sha256, published_by)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(versionId, pkgId, version, manifestText, formulaKey, manifestHash, user.id).run();
+    ).bind(versionId, pkgId, version, manifestJson, formulaKey, manifestHash, user.id).run();
   }
 
   // ── Extract type-specific metadata ──

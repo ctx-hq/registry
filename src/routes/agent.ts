@@ -31,10 +31,19 @@ app.get("/:fullName{.+\\.ctx$}", optionalAuth, async (c) => {
   const version = (ver?.version as string) ?? "unknown";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let manifest: any = {};
-  try {
-    manifest = ver?.manifest ? JSON.parse(ver.manifest as string) : {};
-  } catch {
-    // invalid manifest JSON, use empty object
+  if (ver?.manifest) {
+    const raw = ver.manifest as string;
+    try {
+      manifest = JSON.parse(raw);
+    } catch {
+      // Legacy: some manifests were stored as YAML before publish normalized to JSON
+      try {
+        const { parse: parseYAML } = await import("yaml");
+        manifest = parseYAML(raw) ?? {};
+      } catch {
+        // unparseable, use empty object
+      }
+    }
   }
 
   let instructions = `## ${fullName}@${version}\n\n`;
