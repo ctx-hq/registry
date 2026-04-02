@@ -21,6 +21,18 @@ export async function processEnrichmentBatch(
         continue;
       }
 
+      if (type === "source_sync") {
+        // Source-linked package changed upstream — re-enrich and re-vectorize
+        console.log(`Source sync: re-enriching ${pkg.full_name}`);
+        await enrichPackage(env, pkg);
+        const freshPkg = await env.DB.prepare(
+          "SELECT id, full_name, description, summary, keywords, capabilities, content_hash FROM packages WHERE id = ?"
+        ).bind(packageId).first();
+        await vectorizePackage(env, freshPkg ?? pkg);
+        msg.ack();
+        continue;
+      }
+
       if (type === "enrich" || type === "vectorize_and_enrich") {
         await enrichPackage(env, pkg);
       }

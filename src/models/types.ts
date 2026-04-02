@@ -65,12 +65,19 @@ export interface VectorChunkRow {
   vectorized_at: string;
 }
 
-export type EnrichmentMessageType = "vectorize" | "enrich" | "vectorize_and_enrich";
+export type EnrichmentMessageType = "vectorize" | "enrich" | "vectorize_and_enrich" | "source_sync";
 
-export interface EnrichmentMessage {
-  type: EnrichmentMessageType;
-  packageId: string;
-}
+export type EnrichmentMessage =
+  | { type: "vectorize" | "enrich" | "vectorize_and_enrich"; packageId: string }
+  | {
+      type: "source_sync";
+      packageId: string;
+      full_name?: string;
+      github_repo?: string;
+      path?: string;
+      ref?: string;
+      commit?: string;
+    };
 
 export interface VersionRow {
   id: string;

@@ -25,6 +25,7 @@ import transfers from "./routes/transfers";
 import notifications from "./routes/notifications";
 import mcp from "./routes/mcp";
 import claims from "./routes/claims";
+import submissions from "./routes/submissions";
 import { resolvePackageName } from "./services/redirect";
 import { cleanupOldNotifications } from "./services/notification";
 
@@ -104,6 +105,7 @@ app.route("/", transfers);
 app.route("/", notifications);
 app.route("/", mcp);
 app.route("/", claims);
+app.route("/", submissions);
 app.route("/", root);
 
 // 404 handler — consistent JSON format for unmatched routes

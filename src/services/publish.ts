@@ -94,6 +94,7 @@ export async function extractTypeMetadata(
   db: D1Database,
   versionId: string,
   manifest: Record<string, unknown>,
+  packageId?: string,
 ): Promise<ExtractMetadataResult> {
   const type_ = manifest.type as string;
   const result: ExtractMetadataResult = {};
@@ -110,8 +111,8 @@ export async function extractTypeMetadata(
     const category = mapToMCPCategory(keywords, description);
     await db
       .prepare(
-        `INSERT OR REPLACE INTO mcp_metadata (version_id, transport, command, args, url, env_vars, tools, resources, category)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO mcp_metadata (version_id, transport, command, args, url, env_vars, tools, resources, category, transports, require_bins, hooks)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         versionId,
@@ -123,8 +124,32 @@ export async function extractTypeMetadata(
         JSON.stringify(mcp.tools ?? []),
         JSON.stringify(mcp.resources ?? []),
         category,
+        JSON.stringify(Array.isArray(mcp.transports) ? mcp.transports : []),
+        JSON.stringify(
+          (typeof mcp.require === "object" && mcp.require !== null)
+            ? (mcp.require as Record<string, unknown>).bins ?? []
+            : [],
+        ),
+        JSON.stringify(
+          (typeof mcp.hooks === "object" && mcp.hooks !== null)
+            ? (mcp.hooks as Record<string, unknown>).post_install ?? []
+            : [],
+        ),
       )
       .run();
+
+    // Upsert upstream tracking if upstream section present
+    const upstream = manifest.upstream as Record<string, unknown> | undefined;
+    if (upstream?.tracking && packageId) {
+      const trackingKey = (upstream.npm as string) ?? (upstream.github as string) ?? (upstream.docker as string) ?? "";
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO upstream_tracking (package_id, tracking_type, tracking_key)
+           VALUES (?, ?, ?)`,
+        )
+        .bind(packageId, upstream.tracking as string, trackingKey)
+        .run();
+    }
   }
 
   if (type_ === "cli") {

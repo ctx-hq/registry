@@ -81,11 +81,11 @@ async function checkAndSync(env: Bindings, sync: SourceSyncRow): Promise<boolean
   if (pkg && env.ENRICHMENT_QUEUE) {
     await env.ENRICHMENT_QUEUE.send({
       type: "source_sync",
-      package_id: sync.package_id,
+      packageId: sync.package_id as string,
       full_name: pkg.full_name,
-      github_repo: sync.github_repo,
-      path: sync.path,
-      ref: sync.ref,
+      github_repo: sync.github_repo as string,
+      path: sync.path as string,
+      ref: sync.ref as string,
       commit: latestSha,
     });
   }

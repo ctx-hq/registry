@@ -197,19 +197,29 @@ app.post("/v1/packages", authMiddleware, async (c) => {
     formulaKey = `${name}/${version}/formula.tar.gz`;
     await c.env.FORMULAS.put(formulaKey, await archive.arrayBuffer());
   }
+
+  // Extract README from form data (sent by CLI alongside manifest)
+  const readmeFile = formData.get("readme");
+  const readmeText = readmeFile instanceof File ? await readmeFile.text() : "";
+
   const versionId = existingVersion
     ? (existingVersion.id as string)
     : generateId();
 
   if (!existingVersion) {
     await c.env.DB.prepare(
-      `INSERT INTO versions (id, package_id, version, manifest, formula_key, sha256, published_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(versionId, pkgId, version, manifestJson, formulaKey, manifestHash, user.id).run();
+      `INSERT INTO versions (id, package_id, version, manifest, readme, formula_key, sha256, published_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(versionId, pkgId, version, manifestJson, readmeText, formulaKey, manifestHash, user.id).run();
+  } else if (readmeText) {
+    // Update README on re-publish (mutable packages)
+    await c.env.DB.prepare(
+      `UPDATE versions SET readme = ? WHERE id = ?`,
+    ).bind(readmeText, versionId).run();
   }
 
   // ── Extract type-specific metadata ──
-  const metaResult = await extractTypeMetadata(c.env.DB, versionId, manifest);
+  const metaResult = await extractTypeMetadata(c.env.DB, versionId, manifest, pkgId);
 
   // ── Auto dist-tag ──
   const distTags = await autoDistTag(c.env.DB, pkgId, versionId, version);

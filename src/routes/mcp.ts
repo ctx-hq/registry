@@ -148,7 +148,7 @@ app.get("/v1/packages/:fullName/server.json", async (c) => {
   // Get latest version + mcp_metadata
   const versionRow = await c.env.DB.prepare(`
     SELECT v.version, mm.transport, mm.command, mm.args, mm.url,
-           mm.env_vars, mm.tools, mm.resources
+           mm.env_vars, mm.tools, mm.resources, mm.transports
     FROM dist_tags dt
     JOIN versions v ON dt.version_id = v.id
     LEFT JOIN mcp_metadata mm ON mm.version_id = v.id
@@ -175,21 +175,43 @@ app.get("/v1/packages/:fullName/server.json", async (c) => {
   const envVars = parseJsonArray(versionRow.env_vars as string);
   const tools = parseJsonArray(versionRow.tools as string);
   const resources = parseJsonArray(versionRow.resources as string);
+  const additionalTransports = parseJsonArray(versionRow.transports as string);
 
-  if (transport === "stdio" && command) {
-    serverJson.packages = [{
-      registryType: "npm",
-      transport: { type: "stdio" },
-      command,
-      args,
-    }];
-  } else if (url) {
-    serverJson.packages = [{
-      registryType: "npm",
-      transport: { type: transport, url },
-    }];
+  // Collect all candidate transports: default first, then additional
+  const candidates: Record<string, unknown>[] = [];
+  if (command) {
+    candidates.push({ transport: "stdio", command, args });
+  }
+  if (url) {
+    candidates.push({ transport, url });
+  }
+  for (const t of additionalTransports) {
+    const ts = t as Record<string, unknown>;
+    if (ts.command) {
+      candidates.push({ transport: "stdio", command: ts.command, args: ts.args ?? [] });
+    } else if (ts.url) {
+      candidates.push({ transport: ts.transport, url: ts.url });
+    }
   }
 
+  // Deduplicate by transport key
+  const seen = new Set<string>();
+  const packages: Record<string, unknown>[] = [];
+  for (const c of candidates) {
+    const key = c.transport === "stdio"
+      ? `stdio:${c.command}:${JSON.stringify(c.args)}`
+      : `${c.transport}:${c.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    if (c.transport === "stdio") {
+      packages.push({ registryType: "npm", transport: { type: "stdio" }, command: c.command, args: c.args });
+    } else {
+      packages.push({ registryType: "npm", transport: { type: c.transport, url: c.url } });
+    }
+  }
+
+  if (packages.length > 0) serverJson.packages = packages;
   if (envVars.length > 0) serverJson.env = envVars;
   if (tools.length > 0) serverJson.tools = tools;
   if (resources.length > 0) serverJson.resources = resources;

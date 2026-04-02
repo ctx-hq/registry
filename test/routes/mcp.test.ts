@@ -270,6 +270,75 @@ describe("MCP Hub routes", () => {
       const res = await request(`/v1/packages/${encodeURIComponent("@test/missing")}/server.json`);
       expect(res.status).toBe(404);
     });
+
+    it("includes additional transports in packages[]", async () => {
+      const transports = JSON.stringify([
+        { id: "remote", transport: "streamable-http", url: "https://api.example.com/mcp/" },
+      ]);
+      const { request } = createMCPApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) {
+            return { id: "pkg3", full_name: "@mcp/github", type: "mcp", description: "GitHub MCP", repository: "", homepage: "" };
+          }
+          if (sql.includes("mcp_metadata")) {
+            return {
+              version: "0.2.0",
+              transport: "stdio",
+              command: "docker",
+              args: '["run","-i","ghcr.io/github/github-mcp-server"]',
+              url: "",
+              env_vars: '[{"name":"GITHUB_TOKEN","required":true}]',
+              tools: '["get_file_contents"]',
+              resources: "[]",
+              transports,
+            };
+          }
+          return null;
+        },
+      });
+
+      const res = await request(`/v1/packages/${encodeURIComponent("@mcp/github")}/server.json`);
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as any;
+      // Should have 2 packages: default stdio + remote transport
+      expect(body.packages).toHaveLength(2);
+      expect(body.packages[0].command).toBe("docker");
+      expect(body.packages[0].transport.type).toBe("stdio");
+      expect(body.packages[1].transport.type).toBe("streamable-http");
+      expect(body.packages[1].transport.url).toBe("https://api.example.com/mcp/");
+    });
+
+    it("handles empty transports array gracefully", async () => {
+      const { request } = createMCPApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) {
+            return { id: "pkg4", full_name: "@mcp/simple", type: "mcp", description: "Simple MCP", repository: "", homepage: "" };
+          }
+          if (sql.includes("mcp_metadata")) {
+            return {
+              version: "1.0.0",
+              transport: "stdio",
+              command: "npx",
+              args: '["-y","@test/simple"]',
+              url: "",
+              env_vars: "[]",
+              tools: "[]",
+              resources: "[]",
+              transports: "[]",
+            };
+          }
+          return null;
+        },
+      });
+
+      const res = await request(`/v1/packages/${encodeURIComponent("@mcp/simple")}/server.json`);
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as any;
+      expect(body.packages).toHaveLength(1);
+      expect(body.packages[0].command).toBe("npx");
+    });
   });
 });
 
