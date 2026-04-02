@@ -8,3 +8,7 @@ wrangler.toml
 # Operational scripts (not product code)
 scripts/hub/
 .claude/
+
+# E2E staging secrets (token values, not hashes)
+e2e/.env.staging
+Makefile

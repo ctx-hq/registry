@@ -230,3 +230,99 @@ describe("publish route — metadata write-through", () => {
     expect(installInsert!.params[5]).toBe("fizzy-gem");
   });
 });
+
+describe("publish route — scope enforcement", () => {
+  const user = { id: "user1", username: "hong" };
+
+  it("rejects publish when token lacks 'publish' endpoint scope", async () => {
+    // Create a mock DB that returns a token with restricted endpoint_scopes
+    const db = createPublishMockDB(user);
+    const origPrepare = db.prepare.bind(db);
+    db.prepare = function (sql: string) {
+      const stmt = origPrepare(sql);
+      if (sql.includes("api_tokens") && sql.includes("token_hash")) {
+        return {
+          bind: (...params: unknown[]) => ({
+            first: async () => ({
+              id: user.id, username: user.username, role: "user",
+              github_id: 1, avatar_url: "", created_at: "",
+              endpoint_scopes: JSON.stringify(["yank"]),
+              package_scopes: JSON.stringify(["*"]),
+              token_type: "personal",
+            }),
+            all: stmt.all, run: stmt.run,
+          }),
+        } as any;
+      }
+      return stmt;
+    };
+
+    const app = new Hono<AppEnv>();
+
+    app.use("*", async (c, next) => {
+      (c as any).env = {
+        DB: db,
+        FORMULAS: { put: async () => {}, get: async () => null },
+        CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
+        ENRICHMENT_QUEUE: { send: async () => {} },
+      };
+      await next();
+    });
+
+    const { AppError } = await import("../../src/utils/errors");
+    app.onError((err, c) => {
+      if (err instanceof AppError) return c.json(err.toJSON(), err.statusCode);
+      return c.json({ error: "internal_error", message: String(err) }, 500);
+    });
+
+    app.route("/", publishRoute);
+
+    const mockExecCtx = { waitUntil: () => {}, passThroughOnException: () => {} };
+    const request: typeof app.request = (input, init, env) =>
+      app.request(input, init, env, mockExecCtx as any);
+
+    const res = await request("/v1/packages", buildPublishRequest({
+      name: "@hong/test-pkg",
+      version: "1.0.0",
+      type: "skill",
+      description: "Test",
+    }));
+
+    expect(res.status).toBe(403);
+    const body = await res.json() as any;
+    expect(body.message).toContain("scope");
+  });
+});
+
+describe("publish route — keyword sync", () => {
+  const user = { id: "user1", username: "hong" };
+
+  it("executes keyword-related SQL after publish", async () => {
+    const { request, db } = createPublishApp(user);
+
+    const res = await request("/v1/packages", buildPublishRequest({
+      name: "@hong/kw-skill",
+      version: "1.0.0",
+      type: "skill",
+      description: "Keyword test",
+      keywords: ["testing", "automation"],
+    }));
+
+    expect(res.status).toBe(201);
+
+    // syncKeywords runs via waitUntil — the mock execCtx calls it synchronously
+    // Check that keyword-related SQL was executed
+    const ops = db._executed;
+
+    // The publish route stores keywords JSON in the packages INSERT
+    const pkgInsert = ops.find(
+      (e: any) => e.sql.includes("INSERT INTO packages") && e.sql.includes("keywords"),
+    );
+    expect(pkgInsert).toBeDefined();
+    // keywords should be serialized JSON
+    const keywordsParam = pkgInsert!.params.find(
+      (p: unknown) => typeof p === "string" && (p as string).includes("testing"),
+    );
+    expect(keywordsParam).toBeDefined();
+  });
+});

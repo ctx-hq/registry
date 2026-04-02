@@ -466,6 +466,105 @@ describe("version deletion — hard delete", () => {
   });
 });
 
+// --- Package detail tests using the actual route ---
+
+import packagesRoute from "../../src/routes/packages";
+
+function createDetailApp(db: MockDB, user?: { id: string }) {
+  const app = new Hono<AppEnv>();
+
+  app.use("*", async (c, next) => {
+    (c as any).env = {
+      DB: db,
+      CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
+    };
+    if (user) c.set("user", user as any);
+    await next();
+  });
+
+  app.route("/", packagesRoute);
+  return app;
+}
+
+describe("package detail — star_count and is_starred", () => {
+  const pkgRow = {
+    id: "pkg-1",
+    full_name: "@hong/cool-skill",
+    type: "skill",
+    description: "A cool skill",
+    summary: "",
+    capabilities: "[]",
+    license: "MIT",
+    repository: "",
+    homepage: "",
+    author: "hong",
+    keywords: "[]",
+    platforms: "[]",
+    downloads: 42,
+    star_count: 7,
+    visibility: "public",
+    owner_type: "user",
+    owner_id: "user-hong",
+    created_at: "2026-01-01",
+    updated_at: "2026-01-01",
+    deleted_at: null,
+  };
+
+  function makeDetailDB(opts?: { starRow?: unknown; user?: { id: string } }) {
+    return createMockDB({
+      firstFn: (sql) => {
+        if (sql.includes("FROM packages WHERE full_name")) return pkgRow;
+        if (sql.includes("FROM stars WHERE user_id")) return opts?.starRow ?? null;
+        // getOwnerProfile: user lookup
+        if (sql.includes("FROM users WHERE id")) return { username: "hong", avatar_url: "" };
+        return null;
+      },
+      allFn: (sql) => {
+        // versions, categories, dist_tags, collections — return empty
+        return [];
+      },
+    });
+  }
+
+  it("response includes star_count field", async () => {
+    const db = makeDetailDB();
+    const app = createDetailApp(db);
+
+    const res = await app.request("/v1/packages/%40hong%2Fcool-skill");
+    expect(res.status).toBe(200);
+
+    const body = await res.json() as any;
+    expect(body.star_count).toBe(7);
+  });
+
+  it("response includes is_starred=false for unauthenticated user", async () => {
+    const db = makeDetailDB();
+    const app = createDetailApp(db);
+
+    const res = await app.request("/v1/packages/%40hong%2Fcool-skill");
+    const body = await res.json() as any;
+    expect(body.is_starred).toBe(false);
+  });
+
+  it("response includes is_starred=true when user has starred the package", async () => {
+    const db = makeDetailDB({ starRow: { "1": 1 } });
+    const app = createDetailApp(db, { id: "user-hong" });
+
+    const res = await app.request("/v1/packages/%40hong%2Fcool-skill");
+    const body = await res.json() as any;
+    expect(body.is_starred).toBe(true);
+  });
+
+  it("response includes is_starred=false when authenticated user has not starred", async () => {
+    const db = makeDetailDB();
+    const app = createDetailApp(db, { id: "user-other" });
+
+    const res = await app.request("/v1/packages/%40hong%2Fcool-skill");
+    const body = await res.json() as any;
+    expect(body.is_starred).toBe(false);
+  });
+});
+
 describe("packages privacy", () => {
   it("version detail query JOINs users to return username, not UUID", () => {
     const expectedSqlPattern = /LEFT JOIN users u ON v\.published_by = u\.id/;

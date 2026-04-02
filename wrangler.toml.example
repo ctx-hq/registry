@@ -46,3 +46,29 @@ GITHUB_CLIENT_ID = ""
 # Cron trigger for scanner (requires available cron slot, limit: 5 per account)
 # [triggers]
 # crons = ["0 */6 * * *"]
+
+# ── Staging environment ──────────────────────────────────────
+# Deploy: wrangler deploy --env staging
+# Migrate: wrangler d1 migrations apply ctx-staging --env staging --remote
+[env.staging]
+name = "ctx-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "ctx-staging"
+database_id = "<your-staging-d1-id>"
+migrations_dir = "migrations"
+
+[[env.staging.r2_buckets]]
+binding = "FORMULAS"
+bucket_name = "ctx-formulas-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "<your-staging-kv-id>"
+
+# VECTORIZE, AI, ENRICHMENT_QUEUE intentionally omitted for staging
+# Add them if staging needs search, enrichment, or embedding features
+
+[env.staging.vars]
+GITHUB_CLIENT_ID = ""
