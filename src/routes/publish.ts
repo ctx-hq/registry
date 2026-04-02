@@ -10,6 +10,9 @@ import { computeSHA256, extractTypeMetadata, autoDistTag, upsertSearchDigest, sy
 import { enqueueEnrichment } from "../services/enrichment";
 import { canPublish, canPublishWithOwner, canManage, ensureUserScope, getOwnerForScope, getOwnerSlug } from "../services/ownership";
 import { runStructuralCheck } from "../services/trust";
+import { getLatestVersion } from "../services/package";
+import { getOwnerProfile } from "../services/ownership";
+import type { OwnerType } from "../models/types";
 import { parse as parseYAML } from "yaml";
 
 const app = new Hono<AppEnv>();
@@ -308,7 +311,72 @@ app.post("/v1/packages/:fullName/versions/:version/yank", authMiddleware, requir
     throw notFound(`Version ${version} not found for ${fullName}`);
   }
 
+  // Refresh search_digest with recalculated latest version
+  const visibility = pkg.visibility as string;
+  if (visibility !== "private") {
+    const latestVer = await getLatestVersion(c.env.DB, pkg.id as string);
+    const ownerProfile = await getOwnerProfile(c.env.DB, pkg.owner_type as OwnerType, pkg.owner_id as string);
+    await upsertSearchDigest(
+      c.env.DB, pkg.id as string, pkg.full_name as string, pkg.type as string,
+      pkg.description as string, (pkg.summary as string) ?? "",
+      (pkg.keywords as string) ?? "[]", (pkg.capabilities as string) ?? "[]",
+      (latestVer?.version as string) ?? "", pkg.downloads as number, ownerProfile.slug,
+    );
+  }
+
   return c.json({ yanked: true, full_name: fullName, version });
+});
+
+// Unyank a version (requires admin+ for org packages)
+app.post("/v1/packages/:fullName/versions/:version/unyank", authMiddleware, requireScope("yank"), async (c) => {
+  const user = c.get("user");
+  const fullName = decodeURIComponent(c.req.param("fullName")!);
+  const version = c.req.param("version")!;
+
+  if (!tokenCanActOnPackage(c, fullName)) {
+    throw forbidden(`Token does not have permission to act on package ${fullName}`);
+  }
+
+  const pkg = await c.env.DB.prepare(
+    "SELECT p.* FROM packages p WHERE p.full_name = ? AND p.deleted_at IS NULL",
+  ).bind(fullName).first();
+
+  if (!pkg) {
+    throw badRequest("Package not found");
+  }
+
+  // Ownership auth: unyank requires admin+ (canManage)
+  const parsed = parseFullName(fullName);
+  if (parsed) {
+    if (!(await canManage(c.env.DB, user.id, parsed.scope))) {
+      throw forbidden("Only org owners and admins can unyank versions");
+    }
+  } else if (pkg.owner_id !== user.id) {
+    throw forbidden("You don't have permission to unyank this version");
+  }
+
+  const result = await c.env.DB.prepare(
+    "UPDATE versions SET yanked = 0 WHERE package_id = ? AND version = ?",
+  ).bind(pkg.id, version).run();
+
+  if (!result.meta.changes) {
+    throw notFound(`Version ${version} not found for ${fullName}`);
+  }
+
+  // Refresh search_digest with recalculated latest version
+  const visibility = pkg.visibility as string;
+  if (visibility !== "private") {
+    const latestVer = await getLatestVersion(c.env.DB, pkg.id as string);
+    const ownerProfile = await getOwnerProfile(c.env.DB, pkg.owner_type as OwnerType, pkg.owner_id as string);
+    await upsertSearchDigest(
+      c.env.DB, pkg.id as string, pkg.full_name as string, pkg.type as string,
+      pkg.description as string, (pkg.summary as string) ?? "",
+      (pkg.keywords as string) ?? "[]", (pkg.capabilities as string) ?? "[]",
+      (latestVer?.version as string) ?? "", pkg.downloads as number, ownerProfile.slug,
+    );
+  }
+
+  return c.json({ yanked: false, full_name: fullName, version });
 });
 
 export default app;

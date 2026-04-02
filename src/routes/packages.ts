@@ -6,7 +6,8 @@ import { getLatestVersion } from "../services/package";
 import { authMiddleware, optionalAuth, requireScope, tokenCanActOnPackage } from "../middleware/auth";
 import { canPublish, canManage, canAdmin, canAccessPackage, getOwnerProfile, getOwnerForScope } from "../services/ownership";
 import { parseFullName, isValidScope } from "../utils/naming";
-import { upsertSearchDigest } from "../services/publish";
+import { upsertSearchDigest, syncKeywords } from "../services/publish";
+import { enqueueEnrichment } from "../services/enrichment";
 import { parseSemVer, compareSemVer } from "../utils/semver";
 import { getPackageAccess, grantPackageAccess, revokePackageAccess } from "../services/package-access";
 import { renamePackage } from "../services/rename";
@@ -204,6 +205,9 @@ app.get("/v1/packages/:fullName", optionalAuth, async (c) => {
       : null;
   }
 
+  // Get latest version
+  const latestVer = await getLatestVersion(c.env.DB, pkg.id as string);
+
   // Check if current user has starred this package
   let isStarred = false;
   if (user) {
@@ -217,6 +221,7 @@ app.get("/v1/packages/:fullName", optionalAuth, async (c) => {
     full_name: pkg.full_name,
     type: pkg.type,
     description: pkg.description,
+    version: (latestVer?.version as string) ?? "",
     summary: pkg.summary ?? "",
     capabilities: JSON.parse((pkg.capabilities as string) ?? "[]"),
     license: pkg.license,
@@ -397,6 +402,117 @@ app.patch("/v1/packages/:fullName/deprecation", authMiddleware, requireScope("ma
   return c.json({ full_name: fullName, deprecated: true, message: body.message });
 });
 
+// Update package metadata (description, keywords, homepage, etc.)
+app.patch("/v1/packages/:fullName/metadata", authMiddleware, requireScope("manage-access"), async (c) => {
+  const user = c.get("user");
+  const fullName = decodeURIComponent(c.req.param("fullName")!);
+
+  if (!tokenCanActOnPackage(c, fullName)) {
+    throw forbidden(`Token does not have permission to act on package ${fullName}`);
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Invalid JSON body");
+  }
+
+  const pkg = await c.env.DB.prepare(
+    "SELECT id, full_name, type, description, summary, keywords, capabilities, downloads, visibility, owner_type, owner_id FROM packages WHERE full_name = ? AND deleted_at IS NULL",
+  ).bind(fullName).first();
+  if (!pkg) throw notFound(`Package ${fullName} not found`);
+
+  const parsed = parseFullName(fullName);
+  if (!parsed) throw badRequest("Invalid package name");
+  if (!(await canManage(c.env.DB, user.id, parsed.scope))) {
+    throw forbidden("Only org owners and admins can update package metadata");
+  }
+
+  // Validate and collect updates
+  const allowedFields: Record<string, { column: string; maxLen: number }> = {
+    description: { column: "description", maxLen: 1024 },
+    keywords: { column: "keywords", maxLen: 0 }, // special handling
+    homepage: { column: "homepage", maxLen: 512 },
+    repository: { column: "repository", maxLen: 512 },
+    license: { column: "license", maxLen: 128 },
+    author: { column: "author", maxLen: 128 },
+  };
+
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+
+  for (const [field, config] of Object.entries(allowedFields)) {
+    if (!(field in body)) continue;
+
+    if (field === "keywords") {
+      const kw = body[field];
+      if (!Array.isArray(kw)) throw badRequest("keywords must be an array of strings");
+      if (kw.length > 20) throw badRequest("keywords must have at most 20 items");
+      for (const item of kw) {
+        if (typeof item !== "string") throw badRequest("Each keyword must be a string");
+        if (item.length > 50) throw badRequest("Each keyword must be at most 50 characters");
+      }
+      setClauses.push(`${config.column} = ?`);
+      values.push(JSON.stringify(kw));
+      continue;
+    }
+
+    const val = body[field];
+    if (typeof val !== "string") throw badRequest(`${field} must be a string`);
+    if (val.length > config.maxLen) throw badRequest(`${field} must be at most ${config.maxLen} characters`);
+    setClauses.push(`${config.column} = ?`);
+    values.push(val);
+  }
+
+  if (setClauses.length === 0) {
+    throw badRequest("No valid fields to update");
+  }
+
+  setClauses.push("updated_at = datetime('now')");
+  values.push(pkg.id);
+
+  await c.env.DB.prepare(
+    `UPDATE packages SET ${setClauses.join(", ")} WHERE id = ?`,
+  ).bind(...values).run();
+
+  // Refresh search_digest if package is publicly visible
+  const visibility = pkg.visibility as string;
+  if (visibility !== "private") {
+    const latestVer = await getLatestVersion(c.env.DB, pkg.id as string);
+    const ownerProfile = await getOwnerProfile(c.env.DB, pkg.owner_type as OwnerType, pkg.owner_id as string);
+    const updatedDescription = typeof body.description === "string" ? body.description : (pkg.description as string);
+    const updatedKeywords = Array.isArray(body.keywords) ? JSON.stringify(body.keywords) : (pkg.keywords as string) ?? "[]";
+    await upsertSearchDigest(
+      c.env.DB, pkg.id as string, pkg.full_name as string, pkg.type as string,
+      updatedDescription, (pkg.summary as string) ?? "",
+      updatedKeywords, (pkg.capabilities as string) ?? "[]",
+      (latestVer?.version as string) ?? "", pkg.downloads as number, ownerProfile.slug,
+    );
+
+    // Queue enrichment refresh to regenerate embeddings
+    if (c.env.ENRICHMENT_QUEUE) {
+      c.executionCtx.waitUntil(
+        enqueueEnrichment(c.env.ENRICHMENT_QUEUE, pkg.id as string, "vectorize"),
+      );
+    }
+  }
+
+  // Sync keywords to normalized tables (for keyword search and /v1/keywords)
+  if (Array.isArray(body.keywords)) {
+    c.executionCtx.waitUntil(syncKeywords(c.env.DB, pkg.id as string, body.keywords as string[]));
+  }
+
+  // Build response with updated values
+  const response: Record<string, unknown> = { full_name: fullName };
+  for (const field of Object.keys(allowedFields)) {
+    if (field in body) {
+      response[field] = body[field];
+    }
+  }
+  return c.json(response);
+});
+
 // Delete a package (hard delete — requires admin+ for org packages)
 app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access"), async (c) => {
   const user = c.get("user");
@@ -425,6 +541,17 @@ app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access
   const versionIds = (versions.results ?? []).map(v => v.id);
   const formulaKeys = (versions.results ?? []).map(v => v.formula_key).filter(Boolean);
 
+  // Collect artifact R2 keys for cleanup
+  let artifactKeys: string[] = [];
+  if (versionIds.length > 0) {
+    const artifactResults = await Promise.all(
+      versionIds.map(vid =>
+        c.env.DB.prepare("SELECT formula_key FROM version_artifacts WHERE version_id = ?").bind(vid).all<{ formula_key: string }>()
+      )
+    );
+    artifactKeys = artifactResults.flatMap(r => (r.results ?? []).map(a => a.formula_key)).filter(Boolean);
+  }
+
   const vectorChunks = await c.env.DB.prepare(
     "SELECT id FROM vector_chunks WHERE package_id = ?",
   ).bind(pkg.id).all<{ id: string }>();
@@ -432,6 +559,7 @@ app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access
 
   const stmts: D1PreparedStatement[] = [];
   for (const vid of versionIds) {
+    stmts.push(c.env.DB.prepare("DELETE FROM version_artifacts WHERE version_id = ?").bind(vid));
     stmts.push(c.env.DB.prepare("DELETE FROM skill_metadata WHERE version_id = ?").bind(vid));
     stmts.push(c.env.DB.prepare("DELETE FROM mcp_metadata WHERE version_id = ?").bind(vid));
     stmts.push(c.env.DB.prepare("DELETE FROM cli_metadata WHERE version_id = ?").bind(vid));
@@ -458,8 +586,11 @@ app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access
     await c.env.DB.batch(stmts.slice(i, i + 100));
   }
 
-  // Best-effort cleanup: R2 archives + Vectorize index
-  const cleanups: Promise<unknown>[] = formulaKeys.map(key => c.env.FORMULAS.delete(key));
+  // Best-effort cleanup: R2 archives + artifacts + Vectorize index
+  const cleanups: Promise<unknown>[] = [
+    ...formulaKeys.map(key => c.env.FORMULAS.delete(key)),
+    ...artifactKeys.map(key => c.env.FORMULAS.delete(key)),
+  ];
   if (vectorChunkIds.length > 0 && c.env.VECTORIZE) {
     cleanups.push(c.env.VECTORIZE.deleteByIds(vectorChunkIds));
   }
@@ -494,8 +625,15 @@ app.delete("/v1/packages/:fullName/versions/:version", authMiddleware, requireSc
   ).bind(pkg.id, version).first<{ id: string; formula_key: string }>();
   if (!ver) throw notFound(`Version ${version} not found for ${fullName}`);
 
-  // Hard delete: metadata → version → dist-tags pointing to this version
+  // Collect artifact R2 keys before deleting
+  const artifacts = await c.env.DB.prepare(
+    "SELECT formula_key FROM version_artifacts WHERE version_id = ?",
+  ).bind(ver.id).all<{ formula_key: string }>();
+  const artifactR2Keys = (artifacts.results ?? []).map(a => a.formula_key).filter(Boolean);
+
+  // Hard delete: artifacts → metadata → version → dist-tags pointing to this version
   const stmts: D1PreparedStatement[] = [
+    c.env.DB.prepare("DELETE FROM version_artifacts WHERE version_id = ?").bind(ver.id),
     c.env.DB.prepare("DELETE FROM skill_metadata WHERE version_id = ?").bind(ver.id),
     c.env.DB.prepare("DELETE FROM mcp_metadata WHERE version_id = ?").bind(ver.id),
     c.env.DB.prepare("DELETE FROM cli_metadata WHERE version_id = ?").bind(ver.id),
@@ -509,10 +647,12 @@ app.delete("/v1/packages/:fullName/versions/:version", authMiddleware, requireSc
   ];
   await c.env.DB.batch(stmts);
 
-  // Delete R2 archive (best-effort)
+  // Delete R2 archive + artifacts (best-effort)
+  const r2Deletes = artifactR2Keys.map(key => c.env.FORMULAS.delete(key).catch(() => {}));
   if (ver.formula_key) {
-    await c.env.FORMULAS.delete(ver.formula_key).catch(() => {});
+    r2Deletes.push(c.env.FORMULAS.delete(ver.formula_key).catch(() => {}));
   }
+  await Promise.allSettled(r2Deletes);
 
   // Check if this was the last version — if so, delete the package too
   const remaining = await c.env.DB.prepare(

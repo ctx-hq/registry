@@ -374,7 +374,23 @@ export async function syncKeywords(
     .map((k) => k.trim().toLowerCase().replace(/[^a-z0-9-]/g, ""))
     .filter((s) => s.length > 0);
 
-  if (slugs.length === 0) return;
+  // If no keywords, clear old mappings and recalculate counts
+  if (slugs.length === 0) {
+    const oldKeywords = await db.prepare(
+      "SELECT keyword_id FROM package_keywords WHERE package_id = ?"
+    ).bind(packageId).all();
+    const oldKeywordIds = (oldKeywords.results ?? []).map((r) => r.keyword_id as string);
+    await db.prepare("DELETE FROM package_keywords WHERE package_id = ?").bind(packageId).run();
+    if (oldKeywordIds.length > 0) {
+      const countStmts = oldKeywordIds.map((kwId) =>
+        db.prepare(
+          "UPDATE keywords SET usage_count = (SELECT COUNT(*) FROM package_keywords WHERE keyword_id = ?) WHERE id = ?"
+        ).bind(kwId, kwId),
+      );
+      await db.batch(countStmts);
+    }
+    return;
+  }
 
   // Batch upsert keywords
   const upsertStmts = slugs.map((slug) =>
