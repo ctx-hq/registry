@@ -1,9 +1,11 @@
 import { parseSemVer, compareSemVer, type SemVer } from "../utils/semver";
 
 export interface VersionRow {
+  id: string;
   version: string;
   manifest: string;
   sha256: string;
+  archive_sha256: string;
   formula_key: string;
   yanked: number;
 }
@@ -24,7 +26,7 @@ export async function resolveDistTag(
 
   const tag = await db
     .prepare(
-      `SELECT v.version, v.manifest, v.sha256, v.formula_key, v.yanked
+      `SELECT v.id, v.version, v.manifest, v.sha256, v.archive_sha256, v.formula_key, v.yanked
        FROM dist_tags dt JOIN versions v ON dt.version_id = v.id
        WHERE dt.package_id = ? AND dt.tag = ?`,
     )

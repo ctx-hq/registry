@@ -17,11 +17,11 @@ app.get("/v1/packages/:fullName/resolve/:constraint", async (c) => {
   if (!pkg) throw notFound(`Package ${fullName} not found`);
 
   const versions = await c.env.DB.prepare(
-    "SELECT version, manifest, sha256, formula_key, yanked FROM versions WHERE package_id = ? ORDER BY created_at DESC"
+    "SELECT id, version, manifest, sha256, archive_sha256, formula_key, yanked FROM versions WHERE package_id = ? ORDER BY created_at DESC"
   ).bind(pkg.id).all();
 
   const rows = (versions.results ?? []) as unknown as Array<{
-    version: string; manifest: string; sha256: string; formula_key: string; yanked: number;
+    id: string; version: string; manifest: string; sha256: string; archive_sha256: string; formula_key: string; yanked: number;
   }>;
 
   const resolved = resolveVersion(rows, constraint);
@@ -34,6 +34,7 @@ app.get("/v1/packages/:fullName/resolve/:constraint", async (c) => {
     version: resolved.version,
     manifest: resolved.manifest,
     sha256: resolved.sha256,
+    archive_sha256: resolved.archive_sha256 ?? "",
     download_url: resolved.formula_key
       ? `https://api.getctx.org/v1/packages/${encodeURIComponent(fullName)}/versions/${resolved.version}/archive`
       : "",

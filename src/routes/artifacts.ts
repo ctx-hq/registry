@@ -99,7 +99,7 @@ app.post(
     const size = archiveBuffer.byteLength;
 
     // Store in R2
-    const r2Key = `${fullName}/${version}/${platform}.tar.gz`;
+    const r2Key = `artifacts/${fullName}/${version}/${platform}.tar.gz`;
     await c.env.FORMULAS.put(r2Key, archiveBuffer);
 
     if (existing) {

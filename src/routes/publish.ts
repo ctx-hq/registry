@@ -190,20 +190,28 @@ app.post("/v1/packages", authMiddleware, requireScope("publish"), async (c) => {
         c.env.DB.prepare("DELETE FROM install_metadata WHERE version_id = ?").bind(existingVersion.id),
         c.env.DB.prepare("DELETE FROM trust_checks WHERE version_id = ?").bind(existingVersion.id),
       ]);
-      await c.env.DB.prepare(
-        "UPDATE versions SET manifest = ?, sha256 = ?, trust_tier = 'unverified', created_at = datetime('now') WHERE id = ?",
-      ).bind(manifestJson, manifestHash, existingVersion.id).run();
+      // Note: archive_sha256 and formula_key will be set after archive is stored in R2
+      // We defer the full UPDATE to after archive processing below
     } else {
       throw conflict(`Version ${version} already exists for ${name}`);
     }
   }
 
-  // ── Store archive in R2 ──
+  // ── Store archive in R2 + compute archive SHA256 ──
   const archive = formData.get("archive");
   let formulaKey = "";
+  let archiveSHA256 = "";
   if (archive instanceof File) {
-    formulaKey = `${name}/${version}/formula.tar.gz`;
-    await c.env.FORMULAS.put(formulaKey, await archive.arrayBuffer());
+    formulaKey = `archives/${name}/${version}.tar.gz`;
+    const archiveBuffer = await archive.arrayBuffer();
+
+    // Compute SHA256 of the actual archive blob for client-side integrity verification
+    const hashBuffer = await crypto.subtle.digest("SHA-256", archiveBuffer);
+    archiveSHA256 = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    await c.env.FORMULAS.put(formulaKey, archiveBuffer);
   }
 
   // Extract README from form data (sent by CLI alongside manifest)
@@ -216,14 +224,26 @@ app.post("/v1/packages", authMiddleware, requireScope("publish"), async (c) => {
 
   if (!existingVersion) {
     await c.env.DB.prepare(
-      `INSERT INTO versions (id, package_id, version, manifest, readme, formula_key, sha256, published_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(versionId, pkgId, version, manifestJson, readmeText, formulaKey, manifestHash, user.id).run();
-  } else if (readmeText) {
-    // Update README on re-publish (mutable packages)
+      `INSERT INTO versions (id, package_id, version, manifest, readme, formula_key, sha256, archive_sha256, published_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(versionId, pkgId, version, manifestJson, readmeText, formulaKey, manifestHash, archiveSHA256, user.id).run();
+  } else {
+    // Mutable re-publish: single UPDATE with all changed fields
+    const updates = ["manifest = ?", "sha256 = ?", "trust_tier = 'unverified'", "created_at = datetime('now')"];
+    const binds: unknown[] = [manifestJson, manifestHash];
+    if (archiveSHA256) {
+      updates.push("archive_sha256 = ?");
+      updates.push("formula_key = ?");
+      binds.push(archiveSHA256, formulaKey);
+    }
+    if (readmeText) {
+      updates.push("readme = ?");
+      binds.push(readmeText);
+    }
+    binds.push(versionId);
     await c.env.DB.prepare(
-      `UPDATE versions SET readme = ? WHERE id = ?`,
-    ).bind(readmeText, versionId).run();
+      `UPDATE versions SET ${updates.join(", ")} WHERE id = ?`,
+    ).bind(...binds).run();
   }
 
   // ── Extract type-specific metadata ──

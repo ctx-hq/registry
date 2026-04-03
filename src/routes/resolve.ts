@@ -38,7 +38,7 @@ app.post("/v1/resolve", optionalAuth, async (c) => {
 
     // Get all non-yanked versions (include id for artifact lookups)
     const versions = await c.env.DB.prepare(
-      "SELECT id, version, manifest, sha256, formula_key FROM versions WHERE package_id = ? AND yanked = 0 ORDER BY created_at DESC"
+      "SELECT id, version, manifest, sha256, archive_sha256, formula_key FROM versions WHERE package_id = ? AND yanked = 0 ORDER BY created_at DESC"
     ).bind(pkg.id).all();
 
     const rows = versions.results ?? [];
@@ -80,6 +80,7 @@ app.post("/v1/resolve", optionalAuth, async (c) => {
         manifest: matched.manifest,
         download_url: downloadUrl,
         sha256: matched.sha256,
+        archive_sha256: matched.archive_sha256 ?? "",
       };
 
       // For collection packages, include member list for client-side expansion

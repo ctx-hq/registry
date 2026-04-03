@@ -39,8 +39,8 @@ app.get("/v1/install/:scope/:name", optionalAuth, async (c) => {
 
   // Get latest version (including id for artifact lookup)
   const latest = await c.env.DB.prepare(
-    "SELECT id, version, sha256 FROM versions WHERE package_id = ? AND yanked = 0 ORDER BY created_at DESC LIMIT 1",
-  ).bind(pkg.id).first<{ id: string; version: string; sha256: string }>();
+    "SELECT id, version, sha256, archive_sha256 FROM versions WHERE package_id = ? AND yanked = 0 ORDER BY created_at DESC LIMIT 1",
+  ).bind(pkg.id).first<{ id: string; version: string; sha256: string; archive_sha256: string }>();
 
   if (!latest) {
     c.header("Content-Type", "text/plain; charset=utf-8");
@@ -53,8 +53,23 @@ app.get("/v1/install/:scope/:name", optionalAuth, async (c) => {
   ).bind(latest.id).first<{ count: number }>();
   const hasArtifacts = (artifactCount?.count ?? 0) > 0;
 
+  // Build per-platform sha256 map for artifact verification
+  let artifactShaMap: Record<string, string> = {};
+  if (hasArtifacts) {
+    const artifacts = await c.env.DB.prepare(
+      "SELECT platform, sha256 FROM version_artifacts WHERE version_id = ?",
+    ).bind(latest.id).all<{ platform: string; sha256: string }>();
+    for (const a of artifacts.results ?? []) {
+      artifactShaMap[a.platform] = a.sha256;
+    }
+  }
+
+  // Only pass a valid archive hash (filter out backfill sentinels)
+  const archiveSha = latest.archive_sha256 && latest.archive_sha256.length === 64
+    ? latest.archive_sha256 : "";
+
   const apiBase = new URL(c.req.url).origin;
-  const script = generateInstallScript(fullName, latest.version, latest.sha256, apiBase, isPrivate, hasArtifacts);
+  const script = generateInstallScript(fullName, latest.version, archiveSha, apiBase, isPrivate, hasArtifacts, artifactShaMap);
 
   c.header("Content-Type", "text/plain; charset=utf-8");
   c.header("X-Content-Type-Options", "nosniff");
@@ -69,6 +84,7 @@ function generateInstallScript(
   apiBase: string,
   isPrivate: boolean,
   hasArtifacts: boolean,
+  artifactShaMap: Record<string, string> = {},
 ): string {
   const escapedName = fullName.replace(/'/g, "'\\''");
   const escapedVersion = version.replace(/'/g, "'\\''");
@@ -111,23 +127,38 @@ ${hasArtifacts ? `# Platform-specific artifact available
 DOWNLOAD_URL="${apiBase}/v1/packages/${encodedName}/versions/${escapedVersion}/artifacts/\${PLATFORM}"
 FALLBACK_URL="${apiBase}/v1/packages/${encodedName}/versions/${escapedVersion}/archive"
 
+# Per-platform SHA256 checksums
+${Object.entries(artifactShaMap).map(([p, s]) => `ARTIFACT_SHA_${p.replace("-", "_")}="${s}"`).join("\n")}
+
 # Try platform artifact first, fall back to default archive
+USED_ARTIFACT=true
 HTTP_CODE=$(curl -fsSL -w "%{http_code}" -o "$TMPDIR/pkg.tar.gz" \\
   ${isPrivate ? '-H "$AUTH_HEADER"' : '${AUTH_HEADER:+-H "$AUTH_HEADER"}'} \\
   "$DOWNLOAD_URL" 2>/dev/null) || true
 
 if [ "$HTTP_CODE" != "200" ]; then
   echo "No artifact for \${PLATFORM}, trying default archive..."
+  USED_ARTIFACT=false
   curl -fsSL -o "$TMPDIR/pkg.tar.gz" \\
     ${isPrivate ? '-H "$AUTH_HEADER"' : '${AUTH_HEADER:+-H "$AUTH_HEADER"}'} \\
     "$FALLBACK_URL"
 fi` : `# Download default archive
+USED_ARTIFACT=false
 curl -fsSL -o "$TMPDIR/pkg.tar.gz" \\
   ${isPrivate ? '-H "$AUTH_HEADER"' : '${AUTH_HEADER:+-H "$AUTH_HEADER"}'} \\
   "${apiBase}/v1/packages/${encodedName}/versions/${escapedVersion}/archive"`}
 
 # ── SHA256 verification ──
-EXPECTED_SHA="${expectedSha256}"
+# Select the correct expected hash: artifact-specific or archive
+EXPECTED_SHA=""
+${hasArtifacts ? `if [ "$USED_ARTIFACT" = "true" ]; then
+  # Look up the platform-specific SHA
+  PLATFORM_VAR="ARTIFACT_SHA_$(echo "\${PLATFORM}" | tr '-' '_')"
+  EXPECTED_SHA="$(eval echo "\\$\${PLATFORM_VAR}" 2>/dev/null)" || true
+fi` : ""}
+if [ -z "$EXPECTED_SHA" ]; then
+  EXPECTED_SHA="${expectedSha256}"
+fi
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_SHA="$(sha256sum "$TMPDIR/pkg.tar.gz" | cut -d' ' -f1)"
 elif command -v shasum >/dev/null 2>&1; then

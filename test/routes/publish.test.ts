@@ -294,6 +294,161 @@ describe("publish route — scope enforcement", () => {
   });
 });
 
+describe("publish route — R2 key format", () => {
+  const user = { id: "user1", username: "hong" };
+
+  it("uses archives/ prefix for package archive key", async () => {
+    const { request, db } = createPublishApp(user);
+
+    const form = new FormData();
+    form.append("manifest", new File([JSON.stringify({
+      name: "@hong/key-test",
+      version: "2.0.0",
+      type: "skill",
+      description: "R2 key format test",
+    })], "ctx.yaml"));
+    form.append("archive", new File([new Uint8Array([1, 2, 3])], "formula.tar.gz"));
+
+    const res = await request("/v1/packages", {
+      method: "POST",
+      body: form,
+      headers: { Authorization: "Bearer test-token" },
+    });
+
+    expect(res.status).toBe(201);
+
+    // Verify formula_key in versions INSERT uses archives/ prefix
+    const versionInsert = db._executed.find(
+      (e: any) => e.sql.includes("INSERT INTO versions") && e.sql.includes("formula_key"),
+    );
+    expect(versionInsert).toBeDefined();
+    // formula_key is at bind index 5: versionId, pkgId, version, manifestJson, readmeText, formulaKey, ...
+    const formulaKey = versionInsert!.params[5] as string;
+    expect(formulaKey).toBe("archives/@hong/key-test/2.0.0.tar.gz");
+  });
+
+  it("does not use old formula.tar.gz format", async () => {
+    const { request, db } = createPublishApp(user);
+
+    const form = new FormData();
+    form.append("manifest", new File([JSON.stringify({
+      name: "@hong/old-format",
+      version: "1.0.0",
+      type: "skill",
+      description: "No old format",
+    })], "ctx.yaml"));
+    form.append("archive", new File([new Uint8Array([5, 6])], "formula.tar.gz"));
+
+    await request("/v1/packages", {
+      method: "POST",
+      body: form,
+      headers: { Authorization: "Bearer test-token" },
+    });
+
+    const versionInsert = db._executed.find(
+      (e: any) => e.sql.includes("INSERT INTO versions") && e.sql.includes("formula_key"),
+    );
+    const formulaKey = versionInsert!.params[5] as string;
+    expect(formulaKey).not.toContain("formula.tar.gz");
+    expect(formulaKey).toMatch(/^archives\//);
+  });
+});
+
+describe("publish route — archive_sha256", () => {
+  const user = { id: "user1", username: "hong" };
+
+  it("stores archive_sha256 in versions INSERT when archive is provided", async () => {
+    const { request, db } = createPublishApp(user);
+
+    const form = new FormData();
+    form.append("manifest", new File([JSON.stringify({
+      name: "@hong/sha-skill",
+      version: "1.0.0",
+      type: "skill",
+      description: "SHA256 test",
+    })], "ctx.yaml"));
+    // Provide a small archive to trigger SHA256 computation
+    form.append("archive", new File([new Uint8Array([1, 2, 3, 4])], "formula.tar.gz"));
+
+    const res = await request("/v1/packages", {
+      method: "POST",
+      body: form,
+      headers: { Authorization: "Bearer test-token" },
+    });
+
+    expect(res.status).toBe(201);
+
+    // Verify versions INSERT includes archive_sha256 column
+    const versionInsert = db._executed.find(
+      (e: any) => e.sql.includes("INSERT INTO versions") && e.sql.includes("archive_sha256"),
+    );
+    expect(versionInsert).toBeDefined();
+
+    // archive_sha256 should be a 64-char hex string (SHA256)
+    const archiveSHA256Param = versionInsert!.params.find(
+      (p: unknown) => typeof p === "string" && (p as string).length === 64 && /^[0-9a-f]+$/.test(p as string),
+    );
+    expect(archiveSHA256Param).toBeDefined();
+  });
+
+  it("stores empty archive_sha256 when no archive is provided", async () => {
+    const { request, db } = createPublishApp(user);
+
+    const res = await request("/v1/packages", buildPublishRequest({
+      name: "@hong/no-archive",
+      version: "1.0.0",
+      type: "skill",
+      description: "No archive test",
+    }));
+
+    expect(res.status).toBe(201);
+
+    // Verify versions INSERT includes archive_sha256 column with empty value
+    const versionInsert = db._executed.find(
+      (e: any) => e.sql.includes("INSERT INTO versions") && e.sql.includes("archive_sha256"),
+    );
+    expect(versionInsert).toBeDefined();
+    // Empty string for archive_sha256 when no archive
+    expect(versionInsert!.params).toContain("");
+  });
+
+  it("produces consistent SHA256 for identical archives", async () => {
+    const archiveContent = new Uint8Array([10, 20, 30, 40, 50]);
+
+    const sha256Values: string[] = [];
+
+    for (let i = 0; i < 2; i++) {
+      const { request, db } = createPublishApp(user);
+      const form = new FormData();
+      form.append("manifest", new File([JSON.stringify({
+        name: `@hong/consistent-${i}`,
+        version: "1.0.0",
+        type: "skill",
+        description: "Consistency test",
+      })], "ctx.yaml"));
+      form.append("archive", new File([archiveContent], "formula.tar.gz"));
+
+      await request("/v1/packages", {
+        method: "POST",
+        body: form,
+        headers: { Authorization: "Bearer test-token" },
+      });
+
+      // INSERT INTO versions (..., sha256, archive_sha256, published_by)
+      // archive_sha256 is at bind index 7 (0-based)
+      const versionInsert = db._executed.find(
+        (e: any) => e.sql.includes("INSERT INTO versions") && e.sql.includes("archive_sha256"),
+      );
+      // Params: versionId, pkgId, version, manifestJson, readmeText, formulaKey, manifestHash, archiveSHA256, userId
+      const archiveSha = versionInsert!.params[7] as string;
+      sha256Values.push(archiveSha);
+    }
+
+    // Same archive content → same SHA256, regardless of manifest differences
+    expect(sha256Values[0]).toBe(sha256Values[1]);
+  });
+});
+
 describe("publish route — keyword sync", () => {
   const user = { id: "user1", username: "hong" };
 
