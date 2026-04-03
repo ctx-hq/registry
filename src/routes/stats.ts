@@ -4,6 +4,7 @@ import { notFound } from "../utils/errors";
 import { generateId } from "../utils/response";
 import { optionalAuth } from "../middleware/auth";
 import { canAccessPackage } from "../services/ownership";
+import { getCacheCounter, setCacheCounter } from "../utils/cache";
 
 const app = new Hono<AppEnv>();
 
@@ -206,17 +207,18 @@ app.get("/v1/stats/agents/:agent", async (c) => {
 
 // Telemetry: report install + agents (rate-limited per IP)
 app.post("/v1/telemetry/install", async (c) => {
-  // Rate limit telemetry: max 60 reports per minute per IP
+  // Rate limit telemetry: max 60 reports per minute per IP (via Cache API)
   const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
   const rlKey = `rl:telemetry:${ip}`;
-  const current = await c.env.CACHE.get(rlKey);
-  const count = current ? (parseInt(current) || 0) : 0;
-  if (count >= 60) {
-    return c.json({ ok: true }); // silently drop over-limit
+  try {
+    const count = await getCacheCounter(rlKey);
+    if (count >= 60) {
+      return c.json({ ok: true }); // silently drop over-limit
+    }
+    c.executionCtx.waitUntil(setCacheCounter(rlKey, count + 1, 60));
+  } catch {
+    // Fail-open: skip telemetry rate limiting if Cache API unavailable
   }
-  c.executionCtx.waitUntil(
-    c.env.CACHE.put(rlKey, String(count + 1), { expirationTtl: 60 }),
-  );
 
   let body: {
     package: string;

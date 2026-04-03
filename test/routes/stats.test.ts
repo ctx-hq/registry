@@ -1,6 +1,38 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import type { AppEnv } from "../../src/bindings";
+
+// Mock Cache API for telemetry rate limiting
+function createMockCacheStore() {
+  const store = new Map<string, string>();
+  return {
+    _store: store,
+    async match(req: string | Request) {
+      const url = typeof req === "string" ? req : req.url;
+      const val = store.get(url);
+      return val != null ? new Response(val) : undefined;
+    },
+    async put(req: string | Request, res: Response) {
+      const url = typeof req === "string" ? req : req.url;
+      store.set(url, await res.text());
+    },
+    async delete(req: string | Request) {
+      const url = typeof req === "string" ? req : req.url;
+      return store.delete(url);
+    },
+  };
+}
+
+let mockCacheStore: ReturnType<typeof createMockCacheStore>;
+
+beforeEach(() => {
+  mockCacheStore = createMockCacheStore();
+  (globalThis as any).caches = { default: mockCacheStore };
+});
+
+afterEach(() => {
+  delete (globalThis as any).caches;
+});
 
 // --- Mock DB ---
 
@@ -329,6 +361,59 @@ describe("stats routes", () => {
       });
 
       expect(res.status).toBe(200);
+    });
+
+    it("should silently drop telemetry after 60 requests per IP", async () => {
+      // Pre-fill cache counter to 60
+      const key = `https://rate-limit.internal/${encodeURIComponent("rl:telemetry:10.0.0.1")}`;
+      mockCacheStore._store.set(key, "60");
+
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) return { id: "pkg-1", visibility: "public" };
+          return null;
+        },
+      });
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "10.0.0.1",
+        },
+        body: JSON.stringify({ package: "@scope/name", version: "1.0.0" }),
+      });
+
+      expect(res.status).toBe(200);
+      // Should not have written to DB — request was silently dropped
+      const downloadWrites = db._executed.filter(e => e.sql.includes("download_stats"));
+      expect(downloadWrites).toHaveLength(0);
+    });
+
+    it("should fail-open when Cache API is unavailable", async () => {
+      // Remove caches global
+      delete (globalThis as any).caches;
+
+      const { request, db } = createStatsApp({
+        firstFn: (sql) => {
+          if (sql.includes("FROM packages")) return { id: "pkg-1", visibility: "public" };
+          return null;
+        },
+      });
+
+      const res = await request("/v1/telemetry/install", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "10.0.0.1",
+        },
+        body: JSON.stringify({ package: "@scope/name", version: "1.0.0" }),
+      });
+
+      expect(res.status).toBe(200);
+      // Should still process the telemetry (fail-open)
+      const downloadWrites = db._executed.filter(e => e.sql.includes("download_stats"));
+      expect(downloadWrites.length).toBeGreaterThan(0);
     });
   });
 });

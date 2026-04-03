@@ -1,15 +1,41 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Hono } from "hono";
 import { rateLimitMiddleware } from "../../src/middleware/rate-limit";
 import { hashToken } from "../../src/services/auth";
 
-function createMockKV(store: Map<string, string> = new Map()) {
+// Mock Cache API (caches.default) globally
+function createMockCacheStore() {
+  const store = new Map<string, string>();
   return {
-    async get(key: string) { return store.get(key) ?? null; },
-    async put(key: string, val: string, _opts?: unknown) { store.set(key, val); },
-    async delete(key: string) { store.delete(key); },
+    _store: store,
+    async match(req: string | Request) {
+      const url = typeof req === "string" ? req : req.url;
+      const val = store.get(url);
+      if (val == null) return undefined;
+      return new Response(val);
+    },
+    async put(req: string | Request, res: Response) {
+      const url = typeof req === "string" ? req : req.url;
+      const text = await res.text();
+      store.set(url, text);
+    },
+    async delete(req: string | Request) {
+      const url = typeof req === "string" ? req : req.url;
+      return store.delete(url);
+    },
   };
 }
+
+let mockCache: ReturnType<typeof createMockCacheStore>;
+
+beforeEach(() => {
+  mockCache = createMockCacheStore();
+  (globalThis as any).caches = { default: mockCache };
+});
+
+afterEach(() => {
+  delete (globalThis as any).caches;
+});
 
 function createMockDB(tokenUserId?: string) {
   return {
@@ -17,7 +43,6 @@ function createMockDB(tokenUserId?: string) {
       return {
         bind() { return this; },
         async first() {
-          // Return user_id if token is valid
           return tokenUserId ? { user_id: tokenUserId } : null;
         },
       };
@@ -25,14 +50,12 @@ function createMockDB(tokenUserId?: string) {
   };
 }
 
-function createApp(kvStore: Map<string, string> = new Map(), tokenUserId?: string) {
-  const mockKV = createMockKV(kvStore);
+function createApp(tokenUserId?: string) {
   const mockDB = createMockDB(tokenUserId);
 
   const app = new Hono();
   app.use("/v1/*", async (c, next) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (c as any).env = { CACHE: mockKV, DB: mockDB };
+    (c as any).env = { DB: mockDB };
     await next();
   });
   app.use("/v1/*", rateLimitMiddleware);
@@ -53,19 +76,19 @@ describe("rate limit middleware", () => {
   });
 
   it("uses IP-based key for anonymous requests", async () => {
-    const kv = new Map<string, string>();
-    const app = createApp(kv);
+    const app = createApp();
     await app.request("/v1/test", {
       headers: { "CF-Connecting-IP": "10.0.0.1" },
     });
 
-    expect(kv.has("rl:ip:10.0.0.1")).toBe(true);
+    // Wait for fire-and-forget cache write to settle
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCache._store.has("https://rate-limit.internal/rl%3Aip%3A10.0.0.1")).toBe(true);
   });
 
   it("uses user_id-based key for authenticated requests (not token hash)", async () => {
-    const kv = new Map<string, string>();
     const userId = "user-alice-123";
-    const app = createApp(kv, userId);
+    const app = createApp(userId);
 
     await app.request("/v1/test", {
       headers: {
@@ -74,20 +97,19 @@ describe("rate limit middleware", () => {
       },
     });
 
-    // Should be keyed by user_id, NOT by token hash or IP
-    expect(kv.has(`rl:user:${userId}`)).toBe(true);
-    expect(kv.has("rl:ip:10.0.0.1")).toBe(false);
+    // Wait for fire-and-forget cache write to settle
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCache._store.has(`https://rate-limit.internal/rl%3Auser%3A${userId}`)).toBe(true);
+    expect(mockCache._store.has("https://rate-limit.internal/rl%3Aip%3A10.0.0.1")).toBe(false);
   });
 
   it("multiple tokens from same user share one rate limit quota", async () => {
-    const kv = new Map<string, string>();
     const userId = "user-alice-123";
 
-    // Simulate: token A already used 500 requests
-    kv.set(`rl:user:${userId}`, "500");
+    // Pre-set counter to 500
+    mockCache._store.set(`https://rate-limit.internal/rl%3Auser%3A${userId}`, "500");
 
-    // Token B (different token, same user) should see the same count
-    const app = createApp(kv, userId);
+    const app = createApp(userId);
     const res = await app.request("/v1/test", {
       headers: {
         "CF-Connecting-IP": "10.0.0.1",
@@ -101,9 +123,10 @@ describe("rate limit middleware", () => {
   });
 
   it("returns 429 when limit exceeded", async () => {
-    const kv = new Map<string, string>();
-    kv.set("rl:ip:1.2.3.4", "200");
-    const app = createApp(kv);
+    // Pre-set counter above anonymous limit
+    mockCache._store.set("https://rate-limit.internal/rl%3Aip%3A1.2.3.4", "200");
+
+    const app = createApp();
     const res = await app.request("/v1/test", {
       headers: { "CF-Connecting-IP": "1.2.3.4" },
     });
@@ -111,5 +134,19 @@ describe("rate limit middleware", () => {
     expect(res.status).toBe(429);
     const body = await res.json() as { error: string };
     expect(body.error).toBe("rate_limited");
+  });
+
+  it("fails open when Cache API is unavailable", async () => {
+    // Remove caches global to simulate unavailability
+    delete (globalThis as any).caches;
+
+    const app = createApp();
+    const res = await app.request("/v1/test", {
+      headers: { "CF-Connecting-IP": "1.2.3.4" },
+    });
+
+    // Should pass through, not error
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("180");
   });
 });

@@ -21,18 +21,26 @@ app.post("/v1/auth/device", async (c) => {
   const ttl = 900;
 
   // Store device code + reverse mapping in KV with 15 min TTL
-  await Promise.all([
-    c.env.CACHE.put(
-      `device:${deviceCode}`,
-      JSON.stringify({ user_code: userCode, status: "pending" }),
-      { expirationTtl: ttl }
-    ),
-    c.env.CACHE.put(
-      `usercode:${userCode}`,
-      deviceCode,
-      { expirationTtl: ttl }
-    ),
-  ]);
+  try {
+    await Promise.all([
+      c.env.CACHE.put(
+        `device:${deviceCode}`,
+        JSON.stringify({ user_code: userCode, status: "pending" }),
+        { expirationTtl: ttl }
+      ),
+      c.env.CACHE.put(
+        `usercode:${userCode}`,
+        deviceCode,
+        { expirationTtl: ttl }
+      ),
+    ]);
+  } catch (err) {
+    console.error("Device flow KV error:", err);
+    return c.json(
+      { error: "service_unavailable", message: "Authentication service temporarily unavailable. Please try again later." },
+      503,
+    );
+  }
 
   return c.json({
     device_code: deviceCode,

@@ -189,6 +189,26 @@ describe("POST /v1/auth/device — device code creation", () => {
   });
 });
 
+describe("POST /v1/auth/device — KV failure handling", () => {
+  it("returns 503 when KV is unavailable", async () => {
+    const failingKV: MockKV = {
+      _store: new Map(),
+      async get() { throw new Error("KV put() limit exceeded for the day."); },
+      async put() { throw new Error("KV put() limit exceeded for the day."); },
+      async delete() { throw new Error("KV put() limit exceeded for the day."); },
+    };
+    const db = createMockDB();
+    const app = createTestApp(failingKV, db);
+
+    const res = await app.request("/v1/auth/device", { method: "POST" });
+    expect(res.status).toBe(503);
+
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("service_unavailable");
+    expect(body.message).toContain("temporarily unavailable");
+  });
+});
+
 describe("POST /v1/auth/device/authorize — device code authorization", () => {
   let cache: MockKV;
   let db: MockDB;

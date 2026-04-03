@@ -1,6 +1,7 @@
 import type { Context, Next } from "hono";
 import type { Bindings } from "../bindings";
 import { hashToken } from "../services/auth";
+import { getCacheCounter, setCacheCounter } from "../utils/cache";
 import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_ANON, RATE_LIMIT_MAX_AUTH } from "../utils/constants";
 
 export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, next: Next) {
@@ -26,8 +27,7 @@ export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, ne
       }
     }
 
-    const current = await c.env.CACHE.get(rateLimitKey);
-    const count = current ? (parseInt(current) || 0) : 0;
+    const count = await getCacheCounter(rateLimitKey);
 
     if (count >= maxRequests) {
       c.header("Retry-After", "60");
@@ -36,12 +36,12 @@ export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, ne
       return c.json({ error: "rate_limited", message: "Too many requests" }, 429);
     }
 
-    await c.env.CACHE.put(rateLimitKey, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_MS / 1000 });
+    void setCacheCounter(rateLimitKey, count + 1, RATE_LIMIT_WINDOW_MS / 1000);
 
     c.header("X-RateLimit-Limit", String(maxRequests));
     c.header("X-RateLimit-Remaining", String(maxRequests - count - 1));
   } catch (err) {
-    // Fail-open: if KV/DB is unavailable, skip rate limiting rather than
+    // Fail-open: if Cache API/DB is unavailable, skip rate limiting rather than
     // blocking all requests. Set conservative headers so clients stay informed.
     console.error("Rate limit middleware error (fail-open):", err);
     c.header("X-RateLimit-Limit", String(RATE_LIMIT_MAX_ANON));

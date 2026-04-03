@@ -19,5 +19,23 @@ export const MAX_PAGE_LIMIT = 100;
 export const DEFAULT_MEMBER_LIMIT = 200;
 export const MAX_MEMBER_LIMIT = 200;
 
+// CORS
+export const CORS_ALLOWED_ORIGINS = new Set([
+  "https://getctx.org",
+  "https://www.getctx.org",
+]);
+
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  if (CORS_ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
 // R2 migration
 export const R2_MIGRATION_CONCURRENCY = 8;
