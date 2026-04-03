@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import type { OwnerType, Visibility } from "../models/types";
-import { notFound, badRequest, forbidden } from "../utils/errors";
+import { notFound, badRequest, forbidden, serverError } from "../utils/errors";
 import { getLatestVersion, getLatestVersionsBatch } from "../services/package";
 import { authMiddleware, optionalAuth, requireScope, tokenCanActOnPackage } from "../middleware/auth";
 import { canPublish, canManage, canAdmin, canAccessPackage, getOwnerProfile, getOwnerForScope } from "../services/ownership";
@@ -13,6 +13,7 @@ import { getPackageAccess, grantPackageAccess, revokePackageAccess } from "../se
 import { renamePackage } from "../services/rename";
 import { parseJsonArray } from "../utils/response";
 import { visibilityCondition } from "../services/visibility";
+import { getFormulaBucket, migrateArchives } from "../services/storage";
 import { SORT_FIELDS, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from "../utils/constants";
 
 const app = new Hono<AppEnv>();
@@ -328,6 +329,33 @@ app.patch("/v1/packages/:fullName/visibility", authMiddleware, requireScope("man
   }
 
   const oldVisibility = pkg.visibility as string;
+
+  // Migrate R2 archives between buckets BEFORE updating DB to avoid inconsistency
+  const oldBucket = getFormulaBucket(c.env, oldVisibility);
+  const newBucket = getFormulaBucket(c.env, visibility);
+  if (oldBucket !== newBucket) {
+    const [versionRows, artifactRows] = await Promise.all([
+      c.env.DB.prepare(
+        "SELECT formula_key FROM versions WHERE package_id = ?",
+      ).bind(pkg.id).all<{ formula_key: string }>(),
+      c.env.DB.prepare(
+        "SELECT va.formula_key FROM version_artifacts va JOIN versions v ON va.version_id = v.id WHERE v.package_id = ?",
+      ).bind(pkg.id).all<{ formula_key: string }>(),
+    ]);
+
+    const allKeys = [
+      ...(versionRows.results ?? []).map(v => v.formula_key),
+      ...(artifactRows.results ?? []).map(a => a.formula_key),
+    ].filter(Boolean);
+
+    if (allKeys.length > 0) {
+      const failures = await migrateArchives(oldBucket, newBucket, allKeys);
+      if (failures.length > 0) {
+        throw serverError(`R2 migration failed for ${failures.length} archive(s). Visibility unchanged.`);
+      }
+    }
+  }
+
   await c.env.DB.prepare(
     "UPDATE packages SET visibility = ?, updated_at = datetime('now') WHERE id = ?",
   ).bind(visibility, pkg.id).run();
@@ -506,8 +534,8 @@ app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access
   }
 
   const pkg = await c.env.DB.prepare(
-    "SELECT id FROM packages WHERE full_name = ? AND deleted_at IS NULL",
-  ).bind(fullName).first<{ id: string }>();
+    "SELECT id, visibility FROM packages WHERE full_name = ? AND deleted_at IS NULL",
+  ).bind(fullName).first<{ id: string; visibility: string }>();
   if (!pkg) throw notFound(`Package ${fullName} not found`);
 
   const parsed = parseFullName(fullName);
@@ -570,9 +598,10 @@ app.delete("/v1/packages/:fullName", authMiddleware, requireScope("manage-access
   }
 
   // Best-effort cleanup: R2 archives + artifacts + Vectorize index
+  const bucket = getFormulaBucket(c.env, pkg.visibility);
   const cleanups: Promise<unknown>[] = [
-    ...formulaKeys.map(key => c.env.FORMULAS.delete(key)),
-    ...artifactKeys.map(key => c.env.FORMULAS.delete(key)),
+    ...formulaKeys.map(key => bucket.delete(key)),
+    ...artifactKeys.map(key => bucket.delete(key)),
   ];
   if (vectorChunkIds.length > 0 && c.env.VECTORIZE) {
     cleanups.push(c.env.VECTORIZE.deleteByIds(vectorChunkIds));
@@ -593,8 +622,8 @@ app.delete("/v1/packages/:fullName/versions/:version", authMiddleware, requireSc
   }
 
   const pkg = await c.env.DB.prepare(
-    "SELECT id FROM packages WHERE full_name = ? AND deleted_at IS NULL",
-  ).bind(fullName).first<{ id: string }>();
+    "SELECT id, visibility FROM packages WHERE full_name = ? AND deleted_at IS NULL",
+  ).bind(fullName).first<{ id: string; visibility: string }>();
   if (!pkg) throw notFound(`Package ${fullName} not found`);
 
   const parsed = parseFullName(fullName);
@@ -631,9 +660,10 @@ app.delete("/v1/packages/:fullName/versions/:version", authMiddleware, requireSc
   await c.env.DB.batch(stmts);
 
   // Delete R2 archive + artifacts (best-effort)
-  const r2Deletes = artifactR2Keys.map(key => c.env.FORMULAS.delete(key).catch(() => {}));
+  const deleteBucket = getFormulaBucket(c.env, pkg.visibility);
+  const r2Deletes = artifactR2Keys.map(key => deleteBucket.delete(key).catch(() => {}));
   if (ver.formula_key) {
-    r2Deletes.push(c.env.FORMULAS.delete(ver.formula_key).catch(() => {}));
+    r2Deletes.push(deleteBucket.delete(ver.formula_key).catch(() => {}));
   }
   await Promise.allSettled(r2Deletes);
 

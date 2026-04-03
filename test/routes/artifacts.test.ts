@@ -75,7 +75,17 @@ function createApp(dbOpts: Parameters<typeof createArtifactMockDB>[0], r2Overrid
   const r2 = {
     put: async () => {},
     get: async () => r2Overrides?.getResult ?? null,
+    head: async () => null,
+    delete: async () => {},
     ...r2Overrides,
+  };
+
+  const r2Private = {
+    put: async () => {},
+    get: async () => r2Overrides?.privateGetResult ?? null,
+    head: async () => null,
+    delete: async () => {},
+    ...(r2Overrides?.private ?? {}),
   };
 
   app.onError((err, c) => {
@@ -90,6 +100,7 @@ function createApp(dbOpts: Parameters<typeof createArtifactMockDB>[0], r2Overrid
     (c as any).env = {
       DB: db,
       FORMULAS: r2,
+      PRIVATE_FORMULAS: r2Private,
       CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
     };
     await next();
@@ -390,5 +401,80 @@ describe("GET /v1/packages/:fullName/versions/:version/artifacts/:platform", () 
     );
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe("artifact bucket routing by visibility", () => {
+  it("uploads artifact for private package to PRIVATE_FORMULAS", async () => {
+    const privatePuts: string[] = [];
+    const publicPuts: string[] = [];
+
+    const privatePkg = { id: "pkg1", visibility: "private", owner_type: "user", owner_id: "user1", mutable: 1 };
+    const { request } = createApp(
+      { user: defaultUser, pkg: privatePkg, version: defaultVersion },
+      {
+        put: async (key: string) => { publicPuts.push(key); },
+        private: {
+          put: async (key: string) => { privatePuts.push(key); },
+          get: async () => null, head: async () => null, delete: async () => {},
+        },
+      },
+    );
+
+    const res = await request(
+      "/v1/packages/%40hong%2Fmy-tool/versions/1.0.0/artifacts",
+      { method: "POST", body: buildUploadForm("darwin-arm64"), headers: { Authorization: "Bearer test-token" } },
+    );
+
+    expect(res.status).toBe(201);
+    expect(privatePuts).toHaveLength(1);
+    expect(publicPuts).toHaveLength(0);
+  });
+
+  it("uploads artifact for public package to FORMULAS", async () => {
+    const publicPuts: string[] = [];
+    const privatePuts: string[] = [];
+
+    const { request } = createApp(
+      { user: defaultUser, pkg: defaultPkg, version: defaultVersion },
+      {
+        put: async (key: string) => { publicPuts.push(key); },
+        private: {
+          put: async (key: string) => { privatePuts.push(key); },
+          get: async () => null, head: async () => null, delete: async () => {},
+        },
+      },
+    );
+
+    const res = await request(
+      "/v1/packages/%40hong%2Fmy-tool/versions/1.0.0/artifacts",
+      { method: "POST", body: buildUploadForm("darwin-arm64"), headers: { Authorization: "Bearer test-token" } },
+    );
+
+    expect(res.status).toBe(201);
+    expect(publicPuts).toHaveLength(1);
+    expect(privatePuts).toHaveLength(0);
+  });
+
+  it("downloads artifact for private package from PRIVATE_FORMULAS", async () => {
+    const bodyContent = "private-archive";
+    const mockObj = { body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(bodyContent)); c.close(); } }) };
+
+    const { request } = createApp(
+      { user: defaultUser, pkg: { ...defaultPkg, visibility: "private", owner_id: "user1" }, version: defaultVersion, existingArtifact: { id: "art1" } },
+      {
+        get: async () => null, // public bucket returns null
+        private: { get: async () => mockObj, put: async () => {}, head: async () => null, delete: async () => {} },
+      },
+    );
+
+    // Auth required for private package download
+    const res = await request(
+      "/v1/packages/%40hong%2Fmy-tool/versions/1.0.0/artifacts/darwin-arm64",
+      { headers: { Authorization: "Bearer test-token" } },
+    );
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toBe(bodyContent);
   });
 });

@@ -18,3 +18,6 @@ export const MAX_PAGE_LIMIT = 100;
 // Default high enough to avoid breaking clients that expect full member lists
 export const DEFAULT_MEMBER_LIMIT = 200;
 export const MAX_MEMBER_LIMIT = 200;
+
+// R2 migration
+export const R2_MIGRATION_CONCURRENCY = 8;

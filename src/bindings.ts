@@ -3,6 +3,7 @@ import type { UserRow } from "./models/types";
 export type Bindings = {
   DB: D1Database;
   FORMULAS: R2Bucket;
+  PRIVATE_FORMULAS: R2Bucket;
   CACHE: KVNamespace;
   VECTORIZE: VectorizeIndex;
   AI: Ai;

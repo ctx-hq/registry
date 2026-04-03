@@ -4,6 +4,7 @@ import { notFound } from "../utils/errors";
 import { generateId } from "../utils/response";
 import { optionalAuth } from "../middleware/auth";
 import { canAccessPackage } from "../services/ownership";
+import { getFormulaBucket } from "../services/storage";
 
 const app = new Hono<AppEnv>();
 
@@ -30,7 +31,7 @@ app.get("/v1/packages/:fullName/versions/:version/archive", optionalAuth, async 
 
   if (!ver || !ver.formula_key) throw notFound(`Version ${version} not found`);
 
-  const obj = await c.env.FORMULAS.get(ver.formula_key as string);
+  const obj = await getFormulaBucket(c.env, pkg.visibility as string).get(ver.formula_key as string);
   if (!obj) throw notFound("Formula archive not found");
 
   // Record download stats (non-blocking)

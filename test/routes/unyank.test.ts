@@ -102,7 +102,8 @@ function createUnyankApp(opts?: {
   app.use("*", async (c, next) => {
     (c as any).env = {
       DB: db,
-      FORMULAS: { put: async () => {}, get: async () => null, delete: async () => {} },
+      FORMULAS: { put: async () => {}, get: async () => null, head: async () => null, delete: async () => {} },
+      PRIVATE_FORMULAS: { put: async () => {}, get: async () => null, head: async () => null, delete: async () => {} },
       CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
       ENRICHMENT_QUEUE: { send: async () => {} },
     };

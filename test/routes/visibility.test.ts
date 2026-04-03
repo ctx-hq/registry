@@ -52,11 +52,9 @@ describe("visibility", () => {
         { name: "a", visibility: "public" },
         { name: "b", visibility: "unlisted" },
       ];
-      // Search: only public
       const searchResults = packages.filter(p => p.visibility === "public");
       expect(searchResults).toHaveLength(1);
 
-      // Direct access: public + unlisted (no auth needed)
       const directAccess = packages.filter(p => p.visibility !== "private");
       expect(directAccess).toHaveLength(2);
     });
@@ -64,7 +62,6 @@ describe("visibility", () => {
 
   describe("private package auth", () => {
     it("should return 404 for unauthenticated access to private packages", () => {
-      // Private packages return 404 (not 403) to avoid leaking existence
       const visibility = "private";
       const isAuthenticated = false;
       const shouldReturn404 = visibility === "private" && !isAuthenticated;

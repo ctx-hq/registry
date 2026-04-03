@@ -5,6 +5,7 @@ import { badRequest, conflict, forbidden, notFound } from "../utils/errors";
 import { generateId } from "../utils/response";
 import { parseFullName } from "../utils/naming";
 import { canPublish, canAccessPackage } from "../services/ownership";
+import { getFormulaBucket } from "../services/storage";
 
 const app = new Hono<AppEnv>();
 
@@ -100,7 +101,7 @@ app.post(
 
     // Store in R2
     const r2Key = `artifacts/${fullName}/${version}/${platform}.tar.gz`;
-    await c.env.FORMULAS.put(r2Key, archiveBuffer);
+    await getFormulaBucket(c.env, pkg.visibility as string).put(r2Key, archiveBuffer);
 
     if (existing) {
       // Update existing artifact
@@ -207,7 +208,7 @@ app.get(
 
     if (!artifact) throw notFound(`Artifact for platform ${platform} not found`);
 
-    const obj = await c.env.FORMULAS.get(artifact.formula_key as string);
+    const obj = await getFormulaBucket(c.env, pkg.visibility as string).get(artifact.formula_key as string);
     if (!obj) throw notFound("Artifact archive not found in storage");
 
     // Record download stats (non-blocking)

@@ -32,6 +32,7 @@ function createTestApp(opts: {
     (c as any).env = {
       DB: mockDB,
       FORMULAS: {},
+      PRIVATE_FORMULAS: {},
       CACHE: { get: async () => null, put: async () => {} },
     };
     await next();

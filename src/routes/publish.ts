@@ -10,6 +10,7 @@ import { computeSHA256, extractTypeMetadata, autoDistTag, upsertSearchDigest, sy
 import { enqueueEnrichment } from "../services/enrichment";
 import { canPublish, canPublishWithOwner, canManage, ensureUserScope, getOwnerForScope, getOwnerSlug } from "../services/ownership";
 import { runStructuralCheck } from "../services/trust";
+import { getFormulaBucket } from "../services/storage";
 import { getLatestVersion } from "../services/package";
 import { getOwnerProfile } from "../services/ownership";
 import type { OwnerType } from "../models/types";
@@ -126,8 +127,20 @@ app.post("/v1/packages", authMiddleware, requireScope("publish"), async (c) => {
 
   const pkgId = (pkg?.id as string) ?? generateId();
 
-  // Resolve visibility: explicit request > existing package > default "public"
-  const visibility = (requestedVisibility ?? (pkg?.visibility as string) ?? "public") as Visibility;
+  // Resolve visibility: for new packages use requested or default "public";
+  // for existing packages, keep current visibility (use PATCH /visibility to change)
+  const visibility = pkg
+    ? (pkg.visibility as Visibility)
+    : ((requestedVisibility ?? "public") as Visibility);
+
+  // Reject publish-time visibility change on existing packages — archives would
+  // end up split across buckets. Use PATCH /v1/packages/:fullName/visibility instead.
+  if (pkg && requestedVisibility && requestedVisibility !== (pkg.visibility as string)) {
+    throw badRequest(
+      `Cannot change visibility via publish. Use PATCH /v1/packages/${name}/visibility instead.`,
+    );
+  }
+
   const mutable = pkg ? (requestedMutable || (pkg.mutable as number)) : requestedMutable;
   if (mutable && visibility !== "private") {
     throw badRequest("Mutable packages must be private");
@@ -165,10 +178,10 @@ app.post("/v1/packages", authMiddleware, requireScope("publish"), async (c) => {
       importSource, importExternalId, scopeOwner.owner_id, scopeOwner.owner_type, visibility, mutable, repository,
     ).run();
   } else {
-    // Update metadata on re-publish (including visibility if explicitly changed)
+    // Update metadata on re-publish (visibility unchanged — use PATCH /visibility to change)
     await c.env.DB.prepare(
-      "UPDATE packages SET description = ?, keywords = ?, license = ?, author = ?, homepage = ?, repository = ?, visibility = ?, mutable = ?, updated_at = datetime('now') WHERE id = ?",
-    ).bind(description, keywords, license, author, homepage, repository, visibility, mutable, pkgId).run();
+      "UPDATE packages SET description = ?, keywords = ?, license = ?, author = ?, homepage = ?, repository = ?, mutable = ?, updated_at = datetime('now') WHERE id = ?",
+    ).bind(description, keywords, license, author, homepage, repository, mutable, pkgId).run();
   }
 
   // Always store manifest as JSON for consistent downstream consumption
@@ -211,7 +224,7 @@ app.post("/v1/packages", authMiddleware, requireScope("publish"), async (c) => {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
 
-    await c.env.FORMULAS.put(formulaKey, archiveBuffer);
+    await getFormulaBucket(c.env, visibility).put(formulaKey, archiveBuffer);
   }
 
   // Extract README from form data (sent by CLI alongside manifest)

@@ -219,6 +219,13 @@ function createDeleteApp(overrides?: {
       FORMULAS: {
         put: async () => {},
         get: async () => null,
+        head: async () => null,
+        delete: async (key: string) => { r2Deleted.push(key); },
+      },
+      PRIVATE_FORMULAS: {
+        put: async () => {},
+        get: async () => null,
+        head: async () => null,
         delete: async (key: string) => { r2Deleted.push(key); },
       },
       CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },

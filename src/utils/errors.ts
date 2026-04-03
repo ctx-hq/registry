@@ -37,3 +37,7 @@ export function forbidden(message = "Forbidden") {
 export function conflict(message: string) {
   return new AppError(409, message, "conflict");
 }
+
+export function serverError(message: string) {
+  return new AppError(500, message, "internal_error");
+}

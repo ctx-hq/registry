@@ -17,6 +17,10 @@ migrations_dir = "migrations"
 binding = "FORMULAS"
 bucket_name = "ctx-formulas"
 
+[[r2_buckets]]
+binding = "PRIVATE_FORMULAS"
+bucket_name = "ctx-formulas-private"
+
 [[kv_namespaces]]
 binding = "CACHE"
 id = "<your-kv-namespace-id>"
@@ -62,6 +66,10 @@ migrations_dir = "migrations"
 [[env.staging.r2_buckets]]
 binding = "FORMULAS"
 bucket_name = "ctx-formulas-staging"
+
+[[env.staging.r2_buckets]]
+binding = "PRIVATE_FORMULAS"
+bucket_name = "ctx-formulas-private-staging"
 
 [[env.staging.kv_namespaces]]
 binding = "CACHE"
