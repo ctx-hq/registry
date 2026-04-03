@@ -48,7 +48,10 @@ export async function processEnrichmentBatch(
       msg.ack();
     } catch (err) {
       console.error(`Enrichment failed for message:`, err);
-      msg.retry({ delaySeconds: 30 });
+      // Exponential backoff: 30s → 60s → 120s → 240s (capped)
+      // CF Queue msg.attempts is 1-based (1 on first delivery)
+      const delay = Math.min(30 * Math.pow(2, msg.attempts - 1), 240);
+      msg.retry({ delaySeconds: delay });
     }
   }
 }

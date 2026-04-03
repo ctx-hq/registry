@@ -7,10 +7,10 @@ const app = new Hono<AppEnv>();
 
 app.get("/v1/search", async (c) => {
   const query = c.req.query("q")?.trim();
-  const type_ = c.req.query("type");
-  const category = c.req.query("category");
-  const keyword = c.req.query("keyword");
-  const mode = (c.req.query("mode") ?? "hybrid") as SearchMode;
+  const type_ = c.req.query("type")?.trim();
+  const category = c.req.query("category")?.trim();
+  const keyword = c.req.query("keyword")?.trim();
+  const mode = (c.req.query("mode")?.trim() ?? "hybrid") as SearchMode;
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20") || 20, 100);
 
   if (!query) {

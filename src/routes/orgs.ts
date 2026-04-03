@@ -8,6 +8,7 @@ import { canPublish, getOwnerForScope, isMemberOfOwner } from "../services/owner
 import type { InvitationStatus } from "../models/types";
 import { renameOrg } from "../services/rename";
 import { checkRenameCooldown, isNameAvailable } from "../services/rename";
+import { DEFAULT_MEMBER_LIMIT, MAX_MEMBER_LIMIT } from "../utils/constants";
 import { cancelPackageTransfers } from "../services/transfer";
 import { flattenPackageAliasChains } from "../services/redirect";
 import { notify, notifyOwnerOwners } from "../services/notification";
@@ -138,10 +139,39 @@ app.get("/v1/orgs/:name/members", authMiddleware, async (c) => {
     throw forbidden("You must be a member of this organization to view members");
   }
 
+  const limitParam = c.req.query("limit");
+  const offsetParam = c.req.query("offset");
+  const paginated = limitParam !== undefined || offsetParam !== undefined;
+
+  if (paginated) {
+    const limit = Math.min(parseInt(limitParam ?? String(DEFAULT_MEMBER_LIMIT)) || DEFAULT_MEMBER_LIMIT, MAX_MEMBER_LIMIT);
+    const offset = parseInt(offsetParam ?? "0") || 0;
+
+    const [members, totalResult] = await Promise.all([
+      c.env.DB.prepare(
+        `SELECT u.username, u.avatar_url, m.role, m.visibility, m.created_at
+         FROM org_members m JOIN users u ON m.user_id = u.id
+         WHERE m.org_id = ?
+         ORDER BY m.created_at ASC
+         LIMIT ? OFFSET ?`
+      ).bind(org.id, limit, offset).all(),
+      c.env.DB.prepare(
+        "SELECT COUNT(*) as count FROM org_members WHERE org_id = ?"
+      ).bind(org.id).first(),
+    ]);
+
+    return c.json({
+      members: members.results ?? [],
+      total: (totalResult?.count as number) ?? 0,
+    });
+  }
+
+  // Default: return all members (backward-compatible)
   const members = await c.env.DB.prepare(
     `SELECT u.username, u.avatar_url, m.role, m.visibility, m.created_at
      FROM org_members m JOIN users u ON m.user_id = u.id
-     WHERE m.org_id = ?`
+     WHERE m.org_id = ?
+     ORDER BY m.created_at ASC`
   ).bind(org.id).all();
 
   return c.json({ members: members.results ?? [] });

@@ -12,3 +12,4 @@ scripts/hub/
 # E2E staging secrets (token values, not hashes)
 e2e/.env.staging
 Makefile
+CLAUDE.md

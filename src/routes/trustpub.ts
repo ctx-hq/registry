@@ -38,7 +38,7 @@ app.post("/v1/trustpub/exchange", async (c) => {
   }
 
   // Replay prevention: use jti claim as nonce, check via KV cache
-  const jti = (claims as Record<string, unknown>).jti as string | undefined;
+  const jti = (claims as unknown as Record<string, unknown>).jti as string | undefined;
   if (jti) {
     const cacheKey = `oidc:jti:${jti}`;
     const used = await c.env.CACHE.get(cacheKey);

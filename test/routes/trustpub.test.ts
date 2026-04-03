@@ -19,9 +19,9 @@ beforeAll(async () => {
     { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     true,
     ["sign", "verify"],
-  );
-  rsaJWK = await crypto.subtle.exportKey("jwk", rsaKeyPair.publicKey);
-  rsaJWK.kid = "test-key-1";
+  ) as CryptoKeyPair;
+  rsaJWK = await crypto.subtle.exportKey("jwk", rsaKeyPair.publicKey) as JsonWebKey;
+  (rsaJWK as unknown as Record<string, unknown>).kid = "test-key-1";
 });
 
 async function signedJWT(payload: Record<string, unknown>): Promise<string> {

@@ -1,14 +1,11 @@
 import type { Context, Next } from "hono";
 import type { Bindings } from "../bindings";
 import { hashToken } from "../services/auth";
-
-const WINDOW_MS = 60_000; // 1 minute
-const MAX_REQUESTS_ANON = 180;
-const MAX_REQUESTS_AUTH = 600;
+import { RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_ANON, RATE_LIMIT_MAX_AUTH } from "../utils/constants";
 
 export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, next: Next) {
   try {
-    let maxRequests = MAX_REQUESTS_ANON;
+    let maxRequests = RATE_LIMIT_MAX_ANON;
     let rateLimitKey: string;
 
     const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
@@ -24,7 +21,7 @@ export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, ne
         "SELECT user_id FROM api_tokens WHERE token_hash = ? AND (expires_at IS NULL OR expires_at > datetime('now'))"
       ).bind(tokenHash).first<{ user_id: string }>();
       if (row) {
-        maxRequests = MAX_REQUESTS_AUTH;
+        maxRequests = RATE_LIMIT_MAX_AUTH;
         rateLimitKey = `rl:user:${row.user_id}`;
       }
     }
@@ -39,7 +36,7 @@ export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, ne
       return c.json({ error: "rate_limited", message: "Too many requests" }, 429);
     }
 
-    await c.env.CACHE.put(rateLimitKey, String(count + 1), { expirationTtl: WINDOW_MS / 1000 });
+    await c.env.CACHE.put(rateLimitKey, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_MS / 1000 });
 
     c.header("X-RateLimit-Limit", String(maxRequests));
     c.header("X-RateLimit-Remaining", String(maxRequests - count - 1));
@@ -47,8 +44,8 @@ export async function rateLimitMiddleware(c: Context<{ Bindings: Bindings }>, ne
     // Fail-open: if KV/DB is unavailable, skip rate limiting rather than
     // blocking all requests. Set conservative headers so clients stay informed.
     console.error("Rate limit middleware error (fail-open):", err);
-    c.header("X-RateLimit-Limit", String(MAX_REQUESTS_ANON));
-    c.header("X-RateLimit-Remaining", String(MAX_REQUESTS_ANON));
+    c.header("X-RateLimit-Limit", String(RATE_LIMIT_MAX_ANON));
+    c.header("X-RateLimit-Remaining", String(RATE_LIMIT_MAX_ANON));
   }
 
   await next();

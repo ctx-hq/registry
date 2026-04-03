@@ -468,8 +468,6 @@ describe("version deletion — hard delete", () => {
 
 // --- Package detail tests using the actual route ---
 
-import packagesRoute from "../../src/routes/packages";
-
 function createDetailApp(db: MockDB, user?: { id: string }) {
   const app = new Hono<AppEnv>();
 

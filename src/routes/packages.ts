@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { AppEnv } from "../bindings";
 import type { OwnerType, Visibility } from "../models/types";
 import { notFound, badRequest, forbidden } from "../utils/errors";
-import { getLatestVersion } from "../services/package";
+import { getLatestVersion, getLatestVersionsBatch } from "../services/package";
 import { authMiddleware, optionalAuth, requireScope, tokenCanActOnPackage } from "../middleware/auth";
 import { canPublish, canManage, canAdmin, canAccessPackage, getOwnerProfile, getOwnerForScope } from "../services/ownership";
 import { parseFullName, isValidScope } from "../utils/naming";
@@ -12,6 +12,8 @@ import { parseSemVer, compareSemVer } from "../utils/semver";
 import { getPackageAccess, grantPackageAccess, revokePackageAccess } from "../services/package-access";
 import { renamePackage } from "../services/rename";
 import { parseJsonArray } from "../utils/response";
+import { visibilityCondition } from "../services/visibility";
+import { SORT_FIELDS, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT } from "../utils/constants";
 
 const app = new Hono<AppEnv>();
 
@@ -19,35 +21,18 @@ const app = new Hono<AppEnv>();
 app.get("/v1/packages", optionalAuth, async (c) => {
   const type_ = c.req.query("type");
   const sort = c.req.query("sort") ?? "downloads";
-  const limit = Math.min(parseInt(c.req.query("limit") ?? "20") || 20, 100);
+  const limit = Math.min(parseInt(c.req.query("limit") ?? String(DEFAULT_PAGE_LIMIT)) || DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT);
   const offset = parseInt(c.req.query("offset") ?? "0") || 0;
 
   let query = "SELECT id, full_name, type, description, visibility, downloads, created_at, updated_at FROM packages";
   const params: unknown[] = [];
   const conditions: string[] = ["deleted_at IS NULL"];
 
-  // Visibility: show public to all, plus private/unlisted to authorized owners
-  // For restricted private org packages (with package_access rows), only show to
-  // users in the ACL or org owner/admin — not to all org members.
+  // Visibility filtering via shared helper
   const user = c.get("user");
-  if (user) {
-    conditions.push(`(visibility = 'public' OR (
-      (owner_type = 'user' AND owner_id = ?)
-      OR (owner_type = 'org' AND owner_id IN (
-        SELECT org_id FROM org_members WHERE user_id = ?
-      ) AND (
-        visibility != 'private'
-        OR NOT EXISTS (SELECT 1 FROM package_access WHERE package_id = packages.id)
-        OR EXISTS (SELECT 1 FROM package_access WHERE package_id = packages.id AND user_id = ?)
-        OR owner_id IN (
-          SELECT org_id FROM org_members WHERE user_id = ? AND role IN ('owner', 'admin')
-        )
-      ))
-    ))`);
-    params.push(user.id, user.id, user.id, user.id);
-  } else {
-    conditions.push("visibility = 'public'");
-  }
+  const vis = visibilityCondition(user?.id ?? null);
+  conditions.push(vis.sql);
+  params.push(...vis.params);
 
   const category = c.req.query("category");
 
@@ -71,7 +56,7 @@ app.get("/v1/packages", optionalAuth, async (c) => {
   let countQuery = "SELECT COUNT(*) as count FROM packages WHERE " + conditions.join(" AND ");
   const countParams = [...params];
 
-  const orderCol = sort === "created" ? "created_at" : "downloads";
+  const orderCol = SORT_FIELDS.get(sort) ?? "downloads";
   query += ` ORDER BY ${orderCol} DESC LIMIT ? OFFSET ?`;
   params.push(limit, offset);
 
@@ -80,21 +65,19 @@ app.get("/v1/packages", optionalAuth, async (c) => {
     c.env.DB.prepare(countQuery).bind(...countParams).first(),
   ]);
 
-  // Get latest version for each package
-  const packages = await Promise.all(
-    (result.results ?? []).map(async (pkg: Record<string, unknown>) => {
-      const ver = await getLatestVersion(c.env.DB, pkg.id as string);
-      return {
-        full_name: pkg.full_name,
-        type: pkg.type,
-        description: pkg.description,
-        version: (ver?.version as string) ?? "",
-        downloads: pkg.downloads,
-        visibility: pkg.visibility ?? "public",
-        repository: pkg.repository ?? "",
-      };
-    })
-  );
+  // Batch-fetch latest version for all packages (avoids N+1)
+  const packageIds = (result.results ?? []).map((pkg) => pkg.id as string);
+  const latestVersions = await getLatestVersionsBatch(c.env.DB, packageIds);
+
+  const packages = (result.results ?? []).map((pkg: Record<string, unknown>) => ({
+    full_name: pkg.full_name,
+    type: pkg.type,
+    description: pkg.description,
+    version: latestVersions.get(pkg.id as string) ?? "",
+    downloads: pkg.downloads,
+    visibility: pkg.visibility ?? "public",
+    repository: pkg.repository ?? "",
+  }));
 
   return c.json({ packages, total: (totalResult?.count as number) ?? 0 });
 });
