@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy API (Hono + CF Workers → api.getctx.org)
+# Deploy Registry (Hono + CF Workers → registry.getctx.org)
 # Usage: bash scripts/deploy.sh [--skip-test] [--no-cache]
 
 set -euo pipefail
@@ -58,7 +58,7 @@ dim "  Deploying to CF Workers..."
 output=$(npx wrangler deploy 2>&1)
 if echo "$output" | grep -q "Deployed"; then
   version=$(echo "$output" | grep "Version ID" | sed 's/.*: //')
-  ok "API deployed → api.getctx.org"
+  ok "API deployed → registry.getctx.org"
   dim "  Version: $version"
 else
   err "API deploy failed"

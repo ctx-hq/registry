@@ -28,7 +28,7 @@ describe("root endpoint", () => {
       name: "ctx registry",
       version: APP_VERSION,
       docs: "https://getctx.org/docs",
-      api: "https://api.getctx.org/v1",
+      api: "https://registry.getctx.org/v1",
     });
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
   });

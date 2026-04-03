@@ -9,7 +9,7 @@ app.get("/", (c) => {
     name: "ctx registry",
     version: APP_VERSION,
     docs: "https://getctx.org/docs",
-    api: "https://api.getctx.org/v1",
+    api: "https://registry.getctx.org/v1",
   });
 });
 

@@ -1,6 +1,6 @@
-# ctx Web API
+# ctx Registry
 
-Hono + Cloudflare Workers API for getctx.org registry.
+Hono + Cloudflare Workers registry for getctx.org.
 
 ## Dev & Test
 

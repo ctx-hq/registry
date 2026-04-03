@@ -1,7 +1,7 @@
 # ctx Registry API
 
-[![CI](https://github.com/ctx-hq/api/actions/workflows/ci.yml/badge.svg)](https://github.com/ctx-hq/api/actions/workflows/ci.yml)
-[![Deploy](https://github.com/ctx-hq/api/actions/workflows/deploy.yml/badge.svg)](https://github.com/ctx-hq/api/actions/workflows/deploy.yml)
+[![CI](https://github.com/ctx-hq/registry/actions/workflows/ci.yml/badge.svg)](https://github.com/ctx-hq/registry/actions/workflows/ci.yml)
+[![Deploy](https://github.com/ctx-hq/registry/actions/workflows/deploy.yml/badge.svg)](https://github.com/ctx-hq/registry/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com)
 [![Hono](https://img.shields.io/badge/Hono-E36002?logo=hono&logoColor=white)](https://hono.dev)
@@ -29,7 +29,7 @@ AI 编程助手（Claude Code、Cursor、Windsurf 等）需要一种统一的方
 
 ```bash
 # 克隆并安装
-git clone https://github.com/ctx-hq/api.git && cd api
+git clone https://github.com/ctx-hq/registry.git && cd registry
 pnpm install
 
 # 配置 Cloudflare 资源

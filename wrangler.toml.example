@@ -1,10 +1,10 @@
-name = "ctx-api"
+name = "ctx-registry"
 main = "src/index.ts"
 compatibility_date = "2025-03-27"
 compatibility_flags = ["nodejs_compat"]
 
 routes = [
-  { pattern = "api.getctx.org", custom_domain = true }
+  { pattern = "registry.getctx.org", custom_domain = true }
 ]
 
 [[d1_databases]]
@@ -51,7 +51,7 @@ GITHUB_CLIENT_ID = ""
 # Deploy: wrangler deploy --env staging
 # Migrate: wrangler d1 migrations apply ctx-staging --env staging --remote
 [env.staging]
-name = "ctx-api-staging"
+name = "ctx-registry-staging"
 
 [[env.staging.d1_databases]]
 binding = "DB"
